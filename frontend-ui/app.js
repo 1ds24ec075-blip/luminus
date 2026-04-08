@@ -6,13 +6,22 @@
 (function () {
   'use strict';
 
-  // -------- Demo credential store --------
-  const USERS = {
-    patient1: { password: 'pass123', role: 'patient', name: 'Arjun Mehta' },
-    drsharma: { password: 'pass123', role: 'doctor', name: 'Dr. Priya Sharma' },
-    admin01:  { password: 'pass123', role: 'admin',  name: 'Ravi Kapoor' },
-    labadmin: { password: 'pass123', role: 'lab',    name: 'Sneha Iyer' },
-  };
+  function resolveApiBase() {
+    if (!window.location.origin || window.location.origin === 'null') {
+      return 'http://127.0.0.1:8000';
+    }
+
+    if (window.location.port === '8000') {
+      return window.location.origin;
+    }
+
+    return 'http://127.0.0.1:8000';
+  }
+
+  const API_BASE = resolveApiBase();
+  window.LUMINUS_API_BASE = API_BASE;
+  const LOGIN_API_URL = new URL('/api/login', API_BASE).toString();
+  const REGISTER_PATIENT_API_URL = new URL('/api/patient/register', API_BASE).toString();
 
   // -------- Role metadata --------
   const ROLE_META = {
@@ -24,6 +33,7 @@
       nav: [
         { id: 'overview', label: 'Dashboard', icon: 'activity' },
         { id: 'reports', label: 'Reports & Records', icon: 'download' },
+        { id: 'upload', label: 'Upload Records', icon: 'download' },
         { id: 'meds', label: 'Prescriptions', icon: 'pill' },
         { id: 'timeline', label: 'Care Timeline', icon: 'calendar' },
         { id: 'billing', label: 'Insurance & Billing', icon: 'currency' }
@@ -52,7 +62,146 @@
     },
   };
 
-  const LUMI_API_URL = 'http://127.0.0.1:8000/api/chat';
+  const LUMI_API_URL = new URL('/api/chat', API_BASE).toString();
+  const UPLOADS_STORAGE_KEY = 'luminus_uploaded_reports_v1';
+
+  const toTitleCase = (value) => value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+  function deriveNameFromEmail(email) {
+    const base = (email || '').split('@')[0].replace(/[._-]+/g, ' ').trim();
+    return toTitleCase(base) || 'New Patient';
+  }
+
+  async function registerPatientAndLogin(email, phone) {
+    const registerResponse = await fetch(REGISTER_PATIENT_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        phone,
+        name: deriveNameFromEmail(email),
+      }),
+    });
+
+    const registerPayload = await registerResponse.json();
+    if (!registerResponse.ok) {
+      throw new Error(registerPayload.detail || 'Patient registration failed');
+    }
+
+    const loginResponse = await fetch(LOGIN_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'patient', email, phone }),
+    });
+    const loginPayload = await loginResponse.json();
+    if (!loginResponse.ok || !loginPayload.user) {
+      throw new Error(loginPayload.detail || 'Patient login failed after registration');
+    }
+
+    return loginPayload.user;
+  }
+
+  async function getPatientOnboardingStatus(patientId) {
+    if (!patientId) return { requires_upload: false, report_count: 0 };
+    const response = await fetch(new URL(`/api/patient/onboarding/${patientId}`, API_BASE).toString());
+    if (!response.ok) {
+      return { requires_upload: false, report_count: 0 };
+    }
+    return response.json();
+  }
+
+  async function fetchPatientReports(record, username) {
+    const patientId = record.patient_id;
+    if (!patientId) {
+      return getUploadedReports(username);
+    }
+
+    try {
+      const response = await fetch(new URL(`/api/patient/reports/${patientId}`, API_BASE).toString());
+      const payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.reports)) {
+        return [];
+      }
+
+      return payload.reports.map((item) => ({
+        id: `db-${item.id}`,
+        reportId: item.id,
+        name: item.name || `Report ${item.id}`,
+        date: new Date(item.date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+        type: item.type || 'REPORT',
+        status: item.has_critical ? 'critical' : 'scanned',
+        summary: item.summary || 'AI summary unavailable.',
+        anomalyCount: item.anomaly_count || 0,
+      }));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async function uploadPatientReport(record, file, shareHospitalDetails) {
+    const patientId = record.patient_id;
+    const uploadedBy = record.clinical_id;
+    if (!patientId || !uploadedBy) {
+      throw new Error('Patient profile not linked. Please log in again.');
+    }
+
+    const imageDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Unable to read selected file'));
+      reader.readAsDataURL(file);
+    });
+
+    const response = await fetch(new URL('/api/patient/upload-report', API_BASE).toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patient_id: patientId,
+        uploaded_by: uploadedBy,
+        file_name: file.name,
+        file_type: file.type || 'image',
+        image_data_url: imageDataUrl,
+        share_hospital_details: shareHospitalDetails,
+      }),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || 'Upload failed');
+    }
+    return payload;
+  }
+
+  async function renderUploadDashboard(page, record, username) {
+    const contentArea = page.querySelector('.dash-content');
+    contentArea.innerHTML = '<div class="upload-empty">Loading uploaded reports...</div>';
+    const backendReports = await fetchPatientReports(record, username);
+    contentArea.innerHTML = getUploadDashboard(record, username, backendReports);
+    initUploadEvents(page, record, username, backendReports);
+  }
+
+  async function maybeStartPatientOnboarding(page, record, username) {
+    if (record.role !== 'patient' || !record.patient_id) return;
+
+    const status = await getPatientOnboardingStatus(record.patient_id);
+    if (!status.requires_upload) return;
+
+    const shouldUploadNow = window.confirm(
+      'Welcome. Please upload your previous hospital reports/tests so AI can summarize and detect anomalies. Upload now?'
+    );
+    if (!shouldUploadNow) return;
+
+    const uploadBtn = page.querySelector('.sidebar-nav-item[data-nav="upload"]');
+    if (uploadBtn) {
+      page.querySelectorAll('.sidebar-nav-item').forEach((b) => b.classList.remove('active'));
+      uploadBtn.classList.add('active');
+      await renderUploadDashboard(page, record, username);
+    }
+  }
 
   // -------- DOM References --------
   const $ = (s) => document.querySelector(s);
@@ -66,11 +215,37 @@
   const togglePw     = $('#togglePw');
   const welcomeTitle = $('#welcomeTitle');
   const welcomeSub   = $('#welcomeSub');
+  const connectionStatus = $('#connectionStatus');
+  const connectionStatusText = $('#connectionStatusText');
   const toast        = $('#toast');
   const toastMsg     = $('#toastMsg');
 
   let selectedRole = 'patient';
   let toastTimer = null;
+
+  function getUploadedReports(username) {
+    const all = JSON.parse(localStorage.getItem(UPLOADS_STORAGE_KEY) || '{}');
+    return Array.isArray(all[username]) ? all[username] : [];
+  }
+
+  function saveUploadedReports(username, reports) {
+    const all = JSON.parse(localStorage.getItem(UPLOADS_STORAGE_KEY) || '{}');
+    all[username] = reports;
+    localStorage.setItem(UPLOADS_STORAGE_KEY, JSON.stringify(all));
+  }
+
+  function createUploadedReport(file) {
+    const now = new Date();
+    const ext = file.name.includes('.') ? file.name.split('.').pop().toUpperCase() : 'FILE';
+    return {
+      id: `upl-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      name: file.name,
+      date: now.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+      type: ext,
+      status: 'uploaded',
+      summary: 'Awaiting doctor scan for AI summary.',
+    };
+  }
 
   // -------- Particle Canvas --------
   function initParticles() {
@@ -169,20 +344,39 @@
     toastTimer = setTimeout(() => toast.classList.remove('show'), 3500);
   }
 
+  async function updateConnectionStatus() {
+    if (!connectionStatus || !connectionStatusText) return;
+
+    connectionStatus.className = 'connection-status checking';
+    connectionStatusText.textContent = 'Checking secure backend connection...';
+
+    try {
+      const response = await fetch(new URL('/health', API_BASE).toString(), {
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        throw new Error('Health check failed');
+      }
+
+      const payload = await response.json();
+      connectionStatus.className = 'connection-status online';
+      connectionStatusText.textContent = payload.ok
+        ? 'Secure backend online'
+        : 'Backend available';
+    } catch (error) {
+      connectionStatus.className = 'connection-status offline';
+      connectionStatusText.textContent = 'Backend unreachable';
+    }
+  }
+
   // -------- Role Selection --------
   $$('.role-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       $$('.role-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       selectedRole = btn.dataset.role;
-      const meta = ROLE_META[selectedRole];
+      const meta = ROLE_META[selectedRole] || ROLE_META.patient;
       welcomeSub.textContent = meta.welcomeSub;
-
-      // Animate focus color change on input
-      document.documentElement.style.setProperty(
-        '--focus-ring',
-        getComputedStyle(document.documentElement).getPropertyValue(`--accent-${meta.color}`)
-      );
     });
   });
 
@@ -194,27 +388,8 @@
     togglePw.style.opacity = isPassword ? '1' : '0.5';
   });
 
-  // -------- Demo Chips --------
-  $$('.demo-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      const { user, pass, role } = chip.dataset;
-      usernameEl.value = user;
-      passwordEl.value = pass;
-      // Select matching role
-      $$('.role-btn').forEach((b) => b.classList.remove('active'));
-      const matching = $(`.role-btn[data-role="${role}"]`);
-      if (matching) matching.classList.add('active');
-      selectedRole = role;
-      welcomeSub.textContent = ROLE_META[role].welcomeSub;
-
-      // Subtle bounce feedback
-      chip.style.transform = 'scale(0.95)';
-      setTimeout(() => (chip.style.transform = ''), 150);
-    });
-  });
-
   // -------- Form Submit --------
-  loginForm.addEventListener('submit', (e) => {
+  loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
 
     // Reset errors
@@ -223,53 +398,60 @@
     $('#usernameError').textContent = '';
     $('#passwordError').textContent = '';
 
-    const user = usernameEl.value.trim().toLowerCase();
-    const pass = passwordEl.value;
+    const email = usernameEl.value.trim().toLowerCase();
+    const phone = passwordEl.value.trim();
 
     // Validate
-    if (!user) {
+    if (!email) {
       $('#usernameGroup').classList.add('error');
-      $('#usernameError').textContent = 'Username is required';
+      $('#usernameError').textContent = 'Email is required';
       usernameEl.focus();
       return;
     }
-    if (!pass) {
+    if (!phone) {
       $('#passwordGroup').classList.add('error');
-      $('#passwordError').textContent = 'Password is required';
+      $('#passwordError').textContent = 'Phone number is required';
       passwordEl.focus();
       return;
     }
 
-    // Simulate async auth
     loginBtn.classList.add('loading');
     loginBtn.disabled = true;
 
-    setTimeout(() => {
+    try {
+      let response = await fetch(LOGIN_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: selectedRole, email, phone }),
+      });
+
+      let payload = await response.json();
+      if (!response.ok || !payload.user) {
+        if (selectedRole === 'patient' && response.status === 401) {
+          const createNow = window.confirm('No patient found with this email/phone. Create a new patient profile now?');
+          if (createNow) {
+            const newUser = await registerPatientAndLogin(email, phone);
+            payload = { user: newUser };
+          } else {
+            throw new Error(payload.detail || 'Login failed');
+          }
+        } else {
+          throw new Error(payload.detail || 'Login failed');
+        }
+      }
+
+      const record = payload.user;
+      showToast(`Welcome, ${record.name}!`, 'success');
+      setTimeout(() => navigateToDashboard(record.email, record), 600);
+    } catch (err) {
+      const message = String(err.message || 'Login failed');
+      showToast(message, 'error');
+      $('#passwordGroup').classList.add('error');
+      $('#passwordError').textContent = 'Invalid email or phone number';
+    } finally {
       loginBtn.classList.remove('loading');
       loginBtn.disabled = false;
-
-      const record = USERS[user];
-      if (!record) {
-        showToast('User not found. Try a demo account.', 'error');
-        $('#usernameGroup').classList.add('error');
-        $('#usernameError').textContent = 'Unknown username';
-        return;
-      }
-      if (record.password !== pass) {
-        showToast('Incorrect password.', 'error');
-        $('#passwordGroup').classList.add('error');
-        $('#passwordError').textContent = 'Wrong password';
-        return;
-      }
-      if (record.role !== selectedRole) {
-        showToast(`This account is for the ${ROLE_META[record.role].label} role.`, 'error');
-        return;
-      }
-
-      // Auth success → transition to dashboard
-      showToast(`Welcome, ${record.name}!`, 'success');
-      setTimeout(() => navigateToDashboard(user, record), 600);
-    }, 1200);
+    }
   });
 
   // -------- Navigate to Dashboard --------
@@ -277,8 +459,13 @@
     // Hide login UI
     $('.main-container').style.display = 'none';
 
-    // Build & show dashboard
-    renderDashboard(username, record);
+    // Route to doctor portal for doctor role
+    if (record.role === 'doctor') {
+      initDoctorPortal(username, record);
+    } else {
+      // Build & show dashboard for other roles
+      renderDashboard(username, record);
+    }
   }
 
   // -------- Render Dashboard --------
@@ -382,8 +569,10 @@
 
         const contentArea = page.querySelector('.dash-content');
         if (navId === 'reports') {
-          contentArea.innerHTML = getReportsDashboard(record);
+          contentArea.innerHTML = getReportsDashboard(record, username);
           initReportEvents(page, record);
+        } else if (navId === 'upload') {
+          renderUploadDashboard(page, record, username);
         } else if (navId === 'meds') {
           contentArea.innerHTML = getMedicationDashboard(record);
           initMedicationEvents(page);
@@ -411,6 +600,10 @@
 
     // Med "Take now" buttons
     initPatientEvents(page, username, record, role);
+
+    if (role === 'patient') {
+      maybeStartPatientOnboarding(page, record, username);
+    }
   }
 
   function initPatientEvents(page, username, record, role) {
@@ -771,7 +964,7 @@
   }
 
   // -------- Reports Dashboard Content --------
-  function getReportsDashboard(record) {
+  function getReportsDashboard(record, username) {
     const reports = [
       { name: 'Complete Blood Count (CBC)', date: 'Oct 02, 2026', type: 'Lab Report', status: 'ready', isNew: true },
       { name: 'Lipid Profile', date: 'Oct 02, 2026', type: 'Lab Report', status: 'ready', isNew: true },
@@ -780,6 +973,16 @@
       { name: 'Routine Health Checkup', date: 'Jun 10, 2026', type: 'Medical Record', status: 'ready', isNew: false },
       { name: 'Diabetes Screening (HbA1c)', date: 'Oct 08, 2026', type: 'Lab Report', status: 'pending', isNew: true },
     ];
+
+    const uploaded = getUploadedReports(username).map((item) => ({
+      name: item.name,
+      date: item.date,
+      type: 'Uploaded Prescription',
+      status: item.status === 'scanned' ? 'ready' : 'pending',
+      isNew: false,
+      summary: item.summary,
+      uploaded: true,
+    }));
 
     const renderReportList = (list) => list.map(r => `
       <div class="report-item">
@@ -795,6 +998,7 @@
             <span class="report-status status-${r.status}">${r.status}</span>
           </div>
         </div>
+        ${r.summary ? `<div class="report-summary-pill">${r.summary}</div>` : ''}
         <div class="report-actions">
           ${r.status === 'ready' 
             ? `<button class="download-btn" data-name="${r.name}">
@@ -807,6 +1011,8 @@
       </div>
     `).join('');
 
+    const previousReports = reports.filter(r => !r.isNew).concat(uploaded);
+
     return `
       <div class="reports-dashboard">
         <h2 class="section-card-title">New Reports</h2>
@@ -816,10 +1022,138 @@
         
         <h2 class="section-card-title">Previous Reports</h2>
         <div class="reports-list">
-          ${renderReportList(reports.filter(r => !r.isNew))}
+          ${renderReportList(previousReports)}
         </div>
       </div>
     `;
+  }
+
+  function getUploadDashboard(record, username, uploadedReports = null) {
+    const uploaded = Array.isArray(uploadedReports) ? uploadedReports : getUploadedReports(username);
+    const uploadedList = uploaded.length
+      ? uploaded.map(item => `
+        <div class="upload-file-row" data-upload-id="${item.id}">
+          <div class="upload-file-main">
+            <div class="upload-file-name">${item.name}</div>
+            <div class="upload-file-meta">${item.date} • ${item.type}</div>
+            <div class="upload-file-summary">${item.summary}</div>
+          </div>
+          <button class="scan-report-btn" data-upload-id="${item.id}" ${item.status !== 'uploaded' ? 'disabled' : ''}>
+            ${item.status !== 'uploaded' ? 'Scanned ✓' : 'Doctor Scan'}
+          </button>
+        </div>
+      `).join('')
+      : '<div class="upload-empty">No uploaded prescriptions yet. Upload a photo to get started.</div>';
+
+    return `
+      <div class="upload-dashboard-card">
+        <h2 class="section-card-title">Upload Prescription Photo</h2>
+        <p class="upload-help-text">Upload doctor-written prescriptions (image or PDF). Files will appear in Previous Reports after upload.</p>
+
+        <div class="upload-dropzone" id="uploadDropzone">
+          <div class="upload-drop-title">Drop image here or choose file</div>
+          <div class="upload-drop-sub">Supported: JPG, PNG, WEBP, PDF</div>
+          <input type="file" id="prescriptionFileInput" accept="image/*,.pdf" hidden />
+          <button class="upload-select-btn" id="uploadSelectBtn">Choose Photo</button>
+        </div>
+
+        <div class="upload-list-wrap">
+          <h3 class="upload-list-title">Uploaded Files</h3>
+          ${uploadedList}
+        </div>
+      </div>
+    `;
+  }
+
+  function initUploadEvents(page, record, username, uploadedReports = null) {
+    const input = page.querySelector('#prescriptionFileInput');
+    const selectBtn = page.querySelector('#uploadSelectBtn');
+    const dropzone = page.querySelector('#uploadDropzone');
+
+    if (!input || !selectBtn || !dropzone) return;
+
+    const onFilesSelected = async (files) => {
+      if (!files || !files.length) return;
+
+      let shareHospitalDetails = false;
+      if (record.role === 'patient' && record.patient_id) {
+        const choice = window.prompt(
+          'Report privacy option:\nType SHARE to include previous hospital/doctor details.\nType HIDE to hide those details.\nPress Cancel to stop upload.',
+          'HIDE'
+        );
+
+        if (choice === null) {
+          showToast('Upload cancelled.', 'error');
+          return;
+        }
+
+        const normalized = String(choice).trim().toUpperCase();
+        if (normalized === 'SHARE') {
+          shareHospitalDetails = true;
+        } else if (normalized === 'HIDE') {
+          shareHospitalDetails = false;
+        } else {
+          showToast('Invalid option. Type SHARE or HIDE.', 'error');
+          return;
+        }
+      }
+
+      try {
+        if (record.role === 'patient' && record.patient_id) {
+          for (const file of Array.from(files)) {
+            await uploadPatientReport(record, file, shareHospitalDetails);
+          }
+          showToast('Report uploaded and AI analysis completed.', 'success');
+          await renderUploadDashboard(page, record, username);
+          return;
+        }
+
+        const existing = getUploadedReports(username);
+        const created = Array.from(files).map(createUploadedReport);
+        saveUploadedReports(username, created.concat(existing));
+        showToast('Prescription uploaded. Check Previous Reports.', 'success');
+        const contentArea = page.querySelector('.dash-content');
+        contentArea.innerHTML = getUploadDashboard(record, username);
+        initUploadEvents(page, record, username);
+      } catch (error) {
+        showToast(error.message || 'Upload failed.', 'error');
+      }
+    };
+
+    selectBtn.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => onFilesSelected(input.files));
+
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      onFilesSelected(e.dataTransfer.files);
+    });
+
+    page.querySelectorAll('.scan-report-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (record.role === 'patient' && record.patient_id) {
+          showToast('AI scan already completed during upload.', 'success');
+          return;
+        }
+
+        const uploadId = btn.dataset.uploadId;
+        const reports = getUploadedReports(username);
+        const target = reports.find(r => r.id === uploadId);
+        if (!target) return;
+        target.status = 'scanned';
+        target.summary = 'Doctor scan complete: probable hypertension medication guidance and dosage notes extracted.';
+        saveUploadedReports(username, reports);
+        showToast('Doctor scan summary generated.', 'success');
+        const contentArea = page.querySelector('.dash-content');
+        contentArea.innerHTML = getUploadDashboard(record, username);
+        initUploadEvents(page, record, username);
+      });
+    });
   }
 
   // -------- Medication Dashboard Content --------
@@ -1339,6 +1673,7 @@
   function init() {
     initParticles();
     animateCounters();
+    updateConnectionStatus();
   }
 
   if (document.readyState === 'loading') {
@@ -1347,3 +1682,359 @@
     init();
   }
 })();
+
+  /* ========== DOCTOR PORTAL INITIALIZATION ========== */
+  (function() {
+    const $ = (s) => document.querySelector(s);
+    const $$ = (s) => document.querySelectorAll(s);
+    const API_BASE = window.LUMINUS_API_BASE || 'http://127.0.0.1:8000';
+
+    window.initDoctorPortal = async function(username, doctorRecord) {
+      const doctorPortal = $('#doctorPortal');
+      const logoutBtn = $('#logoutBtn');
+      const effectiveDoctorId = doctorRecord.clinical_id || doctorRecord.id;
+      
+      // Set doctor info
+      $('#doctorName').textContent = doctorRecord.name;
+      $('#doctorSpecialty').textContent = doctorRecord.specialty || 'General Medicine';
+      
+      // Show doctor portal
+      doctorPortal.style.display = 'flex';
+      
+      // Load doctor's queue
+      loadDoctorQueue(effectiveDoctorId);
+      
+      // Load alerts
+      loadCriticalAlerts(effectiveDoctorId);
+      
+      // Bind logout
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => {
+          location.reload();
+        });
+      }
+      
+      // Bind visit controls
+      bindVisitControls({ ...doctorRecord, effectiveId: effectiveDoctorId });
+      
+      // Bind prescription upload
+      bindPrescriptionUpload({ ...doctorRecord, effectiveId: effectiveDoctorId });
+      
+      // Setup real-time updates
+      setInterval(() => loadDoctorQueue(effectiveDoctorId), 30000); // Refresh queue every 30s
+      setInterval(() => loadCriticalAlerts(effectiveDoctorId), 20000); // Refresh alerts every 20s
+    };
+
+    async function loadDoctorQueue(doctorId) {
+      try {
+        const response = await fetch(new URL(`/api/doctor/queue/${doctorId}`, API_BASE).toString());
+        const data = await response.json();
+        
+        $('#queueStatus').textContent = `${data.queue_length} patients in queue`;
+        $('#pendingCount').textContent = data.queue_length;
+        $('#avgWait').textContent = data.average_wait;
+        
+        const queueList = $('#queueList');
+        queueList.innerHTML = data.appointments.map(appt => `
+          <div class="queue-item" data-patient-id="${appt.patient_id}">
+            <div class="queue-item-name">${appt.patient_name}</div>
+            <div class="queue-item-time">ESI ${appt.esi_priority} • ${new Date(appt.scheduled_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+          </div>
+        `).join('');
+        
+        // Bind queue item clicks
+        $$('.queue-item').forEach(item => {
+          item.addEventListener('click', () => loadPatientCard(item.dataset.patientId, doctorId));
+        });
+      } catch (err) {
+        console.error('Queue load error:', err);
+      }
+    }
+
+    async function loadCriticalAlerts(doctorId) {
+      try {
+        const response = await fetch(new URL(`/api/doctor/alerts/${doctorId}`, API_BASE).toString());
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Unable to load alerts');
+        }
+
+        const alertsBanner = $('#alertsBanner');
+        const alertsList = $('#alertsList');
+        const alertCount = $('#alertCount');
+
+        alertCount.textContent = String(data.critical_count || 0);
+        alertsList.innerHTML = (data.alerts || []).map((alert) => `
+          <div class="alert-item ${alert.severity}">${alert.message}</div>
+        `).join('');
+
+        alertsBanner.style.display = (data.alerts || []).length > 0 ? 'block' : 'none';
+      } catch (err) {
+        console.error('Alerts load error:', err);
+      }
+    }
+
+    async function loadPatientCard(patientId, doctorId) {
+      try {
+        const historyResponse = await fetch(new URL(`/api/patient/history-summary/${patientId}`, API_BASE).toString());
+        const history = await historyResponse.json();
+
+        if (!historyResponse.ok) {
+          throw new Error(history.detail || 'Failed to load patient summary');
+        }
+        
+        const card = $('#patientCard');
+        $('#patientName').textContent = history.known_conditions ? 'Patient ' + patientId : 'Patient';
+        $('#patientId').textContent = `ID: #${patientId}`;
+        $('#patientAge').textContent = 'Age: --';
+        $('#patientBlood').textContent = `Blood: ${history.blood_group || '--'}`;
+        
+        // Show medical history
+        const historyGrid = $('#patientHistory');
+        const historyItems = [
+          { label: 'Conditions', value: (history.known_conditions || []).join(', ') || 'None' },
+          { label: 'Medications', value: (history.medication_history || []).slice(0, 3).join(', ') || 'None listed' },
+          { label: 'Reports', value: history.previous_reports ? `${history.previous_reports.length} on file` : '0 on file' },
+          { label: 'Blood Group', value: history.blood_group || 'Unknown' }
+        ];
+        
+        historyGrid.innerHTML = historyItems.map(item => `
+          <div class="history-item">
+            <div class="history-label">${item.label}</div>
+            <div class="history-value">${item.value}</div>
+          </div>
+        `).join('');
+
+        const summaryList = $('#patientSummaryPoints');
+        if (summaryList) {
+          const points = Array.isArray(history.summary_points) ? history.summary_points : [];
+          if (points.length > 0) {
+            summaryList.innerHTML = points.map((point) => `<li>${point}</li>`).join('');
+          } else {
+            summaryList.innerHTML = '<li>No AI summary available.</li>';
+          }
+        }
+        
+        card.style.display = 'block';
+        
+        // Store for later use
+        window.currentPatient = { id: patientId, doctorId: doctorId, history: history };
+      } catch (err) {
+        console.error('Patient card error:', err);
+      }
+    }
+
+    function bindVisitControls(doctorRecord) {
+      const startVisitBtn = $('#startVisitBtn');
+      const visitPanel = $('#visitPanel');
+      const closeVisitBtn = $('#closeVisitBtn');
+      const saveVisitBtn = $('#saveVisitBtn');
+      const addNoteBtn = $('#addNoteBtn');
+      const transcriptInput = $('#transcriptInput');
+      const transcriptContent = $('#transcriptContent');
+      const transcriptTime = $('#transcriptTime');
+      
+      if (!startVisitBtn) return;
+
+      function appendTranscriptLine(text, speaker = 'doctor') {
+        if (!text) return;
+        const line = document.createElement('div');
+        line.className = `transcript-line ${speaker}`;
+        line.textContent = text;
+        transcriptContent.appendChild(line);
+        transcriptContent.scrollTop = transcriptContent.scrollHeight;
+      }
+      
+      startVisitBtn.addEventListener('click', async () => {
+        if (!window.currentPatient) {
+          alert('Please select a patient first');
+          return;
+        }
+        
+        // Start visit session
+        try {
+          const response = await fetch(new URL('/api/visit/start', API_BASE).toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              patient_id: window.currentPatient.id,
+              doctor_id: doctorRecord.effectiveId,
+              appointment_id: null
+            })
+          });
+          
+          const visitData = await response.json();
+          if (!response.ok) {
+            throw new Error(visitData.detail || 'Failed to start consultation');
+          }
+          window.currentVisit = visitData;
+          
+          $('#patientCard').style.display = 'none';
+          visitPanel.style.display = 'flex';
+          $('#transcriptContent').innerHTML = '';
+          $('#voiceStatus').textContent = 'Enable Voice to Text';
+          if (transcriptTime) transcriptTime.textContent = '00:00';
+        } catch (err) {
+          console.error('Visit start error:', err);
+          alert(err.message || 'Unable to start consultation');
+        }
+      });
+
+      if (addNoteBtn && transcriptInput) {
+        addNoteBtn.addEventListener('click', () => {
+          const text = transcriptInput.value.trim();
+          if (!text) return;
+          appendTranscriptLine(text, 'doctor');
+          transcriptInput.value = '';
+        });
+
+        transcriptInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            addNoteBtn.click();
+          }
+        });
+      }
+      
+      if (closeVisitBtn) {
+        closeVisitBtn.addEventListener('click', () => {
+          visitPanel.style.display = 'none';
+          $('#patientCard').style.display = 'block';
+        });
+      }
+      
+      if (saveVisitBtn) {
+        saveVisitBtn.addEventListener('click', async () => {
+          if (!window.currentVisit) return;
+          
+          const transcript = [];
+          $$('.transcript-line').forEach(line => {
+            const speaker = line.classList.contains('doctor') ? 'doctor' : 'patient';
+            transcript.push({
+              speaker: speaker,
+              text: line.textContent
+            });
+          });
+          
+          try {
+            const response = await fetch(new URL('/api/visit/save', API_BASE).toString(), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                visit_session_id: window.currentVisit.visit_session_id,
+                patient_id: window.currentPatient.id,
+                doctor_id: doctorRecord.effectiveId,
+                transcript: transcript,
+                urgency_level: 'routine'
+              })
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.detail || 'Failed to save consultation');
+            }
+            
+            visitPanel.style.display = 'none';
+            alert('Visit saved successfully');
+          } catch (err) {
+            console.error('Visit save error:', err);
+            alert(err.message || 'Unable to save consultation');
+          }
+        });
+      }
+    }
+
+    function bindPrescriptionUpload(doctorRecord) {
+      const uploadPrescriptionBtn = $('#uploadPrescriptionBtn');
+      const validatePrescriptionBtn = $('#validatePrescriptionBtn');
+      
+      if (!uploadPrescriptionBtn) return;
+      
+      uploadPrescriptionBtn.addEventListener('click', () => {
+        const medications = prompt('Enter medications (comma-separated):');
+        if (!medications || !window.currentPatient) return;
+        if (!window.currentVisit || !window.currentVisit.visit_session_id) {
+          alert('Start and save consultation first before uploading prescription.');
+          return;
+        }
+        
+        const medList = medications.split(',').map(m => m.trim()).filter(m => m);
+        
+        fetch(new URL('/api/prescription/upload', API_BASE).toString(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            visit_session_id: window.currentVisit.visit_session_id,
+            patient_id: window.currentPatient.id,
+            doctor_id: doctorRecord.effectiveId,
+            medications: medList,
+            dosage: 'As directed',
+            notes: 'Uploaded from doctor portal'
+          })
+        }).then(r => r.json()).then(data => {
+          if (data.detail) {
+            throw new Error(data.detail);
+          }
+          window.currentPrescription = data;
+          alert('Prescription uploaded');
+          // Trigger validation
+          validatePrescriptionBtn.click();
+        }).catch(err => {
+          console.error('Upload error:', err);
+          alert(err.message || 'Unable to upload prescription');
+        });
+      });
+      
+      if (validatePrescriptionBtn) {
+        validatePrescriptionBtn.addEventListener('click', () => {
+          if (!window.currentPatient || !window.currentPrescription) return;
+          
+          const medications = prompt('Enter medications to validate (comma-separated):');
+          if (!medications) return;
+          
+          const medList = medications.split(',').map(m => m.trim()).filter(m => m);
+          
+          fetch(new URL('/api/prescription/validate', API_BASE).toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prescription_id: window.currentPrescription.prescription_id || 0,
+              patient_id: window.currentPatient.id,
+              doctor_id: doctorRecord.effectiveId,
+              medications: medList
+            })
+          }).then(r => r.json()).then(data => {
+            if (data.detail) {
+              throw new Error(data.detail);
+            }
+            const validationStatus = $('#validationStatus');
+            const validationIssues = $('#validationIssues');
+            
+            validationStatus.innerHTML = `<strong>Severity: ${data.severity.toUpperCase()}</strong><p>Score: ${data.confidence_score}%</p>`;
+            
+            validationIssues.innerHTML = data.issues.map(issue => `
+              <div class="validation-issue ${issue.severity}">
+                <div class="issue-title">${issue.type}</div>
+                <div>${issue.message}</div>
+              </div>
+            `).join('');
+            
+            // Show alerts if critical
+            if (data.severity === 'critical') {
+              const alertsBanner = $('#alertsBanner');
+              alertsBanner.style.display = 'block';
+              const alertsList = $('#alertsList');
+              data.issues.filter(i => i.severity === 'critical').forEach(issue => {
+                const alertItem = document.createElement('div');
+                alertItem.className = 'alert-item';
+                alertItem.textContent = issue.message;
+                alertsList.appendChild(alertItem);
+              });
+            }
+          }).catch(err => {
+            console.error('Validation error:', err);
+            alert(err.message || 'Validation failed');
+          });
+        });
+      }
+    }
+  })();

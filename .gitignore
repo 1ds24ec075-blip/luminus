@@ -1,22 +1,199 @@
+# ============================================================================
+# PYTHON
+# ============================================================================
+
 # Python cache and bytecode
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
 
 # Virtual environments
 .venv/
 venv/
+env/
+ENV/
+.env.bak
+venv.bak/
 
-# Environment variables / secrets
+# Python coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+*.cover
+
+# ============================================================================
+# ENVIRONMENT VARIABLES & SECRETS (CRITICAL!)
+# ============================================================================
+
+# Environment files (NEVER commit these)
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+.env.bak
+secrets.json
+*.pem
+*.key
+openai_key.txt
+api_keys.txt
+.secrets
 
-# Local tooling noise
-.vscode/
+# ============================================================================
+# IDE / EDITOR
+# ============================================================================
+
+.vscode/*
+!.vscode/mcp.json
+!.vscode/settings.json
+.vscode/settings.json.local
 .idea/
+*.swp
+*.swo
+*~
+.sublime-project
+.sublime-workspace
+*.iml
+*.iws
+*.ipr
 
-# OS files
+# ============================================================================
+# OS-SPECIFIC FILES
+# ============================================================================
+
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+desktop.ini
 Thumbs.db
+.fuse_hidden*
+.AppleDouble
+.LSOverride
+
+# ============================================================================
+# DATABASES & LOCAL DATA
+# ============================================================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+luminus.db
+patients.db
+doctors.db
+appointments.db
+
+# ============================================================================
+# LOGS & TEMP FILES
+# ============================================================================
+
+*.log
+logs/
+log/
+debug/
+*.out
+.tmp/
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# ============================================================================
+# FRONTEND / NODE (React, JS)
+# ============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+dist/
+build/
+.next/
+out/
+.cache/
+.parcel-cache
+coverage/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============================================================================
+# PROJECT-SPECIFIC
+# ============================================================================
+
+# Uploads and media
+uploads/
+media/
+static/
+temp_files/
+downloads/
+reports/
+test_data/
+
+# Generated files
+*.generated.py
+*.generated.js
+
+# ============================================================================
+# GENERATED / CACHE
+# ============================================================================
+
+.pytest_cache/
+.tox/
+.cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.ruff_cache/
+.ipynb_checkpoints
+
+# ============================================================================
+# IDE PLUGINS
+# ============================================================================
+
+.vscode-settings.json
+.theia/
+.nox/
+.vscode/extensions/
+
+# ============================================================================
+# DOCKER & DEPLOYMENT
+# ============================================================================
+
+.dockerignore
+docker-compose.override.yml
+
+# ============================================================================
+# GIT
+# ============================================================================
+
+.git/
+.gitkeep
+
+# ============================================================================
+# SYSTEM & MISC
+# ============================================================================
+
+.wait-for-it.sh
+CHANGELOG.md
+NOTES.md
+TODO.md (optional)

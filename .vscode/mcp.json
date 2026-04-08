@@ -1,0 +1,48 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "d:/luminus"
+      ]
+    },
+    "patients-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "--db-path",
+        "d:/luminus/patients.db"
+      ]
+    },
+    "doctors-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "--db-path",
+        "d:/luminus/doctors.db"
+      ]
+    },
+    "admins-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "--db-path",
+        "d:/luminus/admins.db"
+      ]
+    },
+    "labs-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "--db-path",
+        "d:/luminus/labs.db"
+      ]
+    }
+  }
+}
