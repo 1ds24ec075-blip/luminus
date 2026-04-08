@@ -94,7 +94,7 @@
       draw() {
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(110, 231, 183, ${this.opacity})`;
+        ctx.fillStyle = `rgba(67, 97, 238, ${this.opacity * 0.6})`;
         ctx.fill();
       }
     }
@@ -111,7 +111,7 @@
             ctx.beginPath();
             ctx.moveTo(particles[a].x, particles[a].y);
             ctx.lineTo(particles[b].x, particles[b].y);
-            ctx.strokeStyle = `rgba(110, 231, 183, ${0.04 * (1 - dist / 120)})`;
+            ctx.strokeStyle = `rgba(67, 97, 238, ${0.06 * (1 - dist / 120)})`;
             ctx.lineWidth = 0.5;
             ctx.stroke();
           }
@@ -281,38 +281,84 @@
     page.id = 'dashboardPage';
     page.className = 'dashboard-page active';
 
+    // Avatar initials & color
+    const initials = record.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    const avatarColors = { patient: '#10b981', doctor: '#4361ee', admin: '#8b5cf6', lab: '#f59e0b' };
+    const avatarColor = avatarColors[role] || '#4361ee';
+
+    // Sidebar nav items
+    const allNavItems = [
+      { id: 'doctor', label: 'Doctor', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>' },
+      { id: 'patient', label: 'Patient', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
+      { id: 'admin', label: 'Admin', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' },
+      { id: 'lab', label: 'Laboratory', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3v7.2l-4 6.8a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-4-6.8V3"/><line x1="9" y1="3" x2="15" y2="3"/></svg>' },
+    ];
+
+    // Only show the current role's nav item
+    const navItems = allNavItems.filter(item => item.id === role);
+
+    const sidebarNavHTML = navItems.map(item =>
+      `<button class="sidebar-nav-item active" data-nav="${item.id}">
+        ${item.icon}
+        <span>${item.label}</span>
+      </button>`
+    ).join('');
+
+    // Main content depends on role
+    const mainContentHTML = role === 'patient'
+      ? getPatientDashboard(record)
+      : getGenericDashboard(record, role, meta);
+
     page.innerHTML = `
-      <header class="dashboard-header">
-        <div class="logo-mini">
+      <aside class="dash-sidebar">
+        <div class="sidebar-logo">
           <svg viewBox="0 0 60 60" fill="none">
-            <circle cx="30" cy="30" r="28" stroke="url(#logoGrad2)" stroke-width="2.5"/>
-            <path d="M30 14V46M22 30H38" stroke="url(#logoGrad2)" stroke-width="3" stroke-linecap="round"/>
-            <circle cx="30" cy="30" r="8" stroke="url(#logoGrad2)" stroke-width="1.5" opacity="0.5"/>
-            <defs><linearGradient id="logoGrad2" x1="0" y1="0" x2="60" y2="60"><stop offset="0%" stop-color="#6EE7B7"/><stop offset="100%" stop-color="#3B82F6"/></linearGradient></defs>
+            <circle cx="30" cy="30" r="28" stroke="#4361ee" stroke-width="2.5"/>
+            <path d="M30 14V46M22 30H38" stroke="#4361ee" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="30" cy="30" r="8" stroke="#4361ee" stroke-width="1.5" opacity="0.4"/>
           </svg>
-          <span>Luminus</span>
+          <span class="sidebar-logo-text">Luminus</span>
         </div>
-        <div class="user-info">
-          <span class="role-badge ${role}">${meta.label}</span>
-          <span class="username-display">${record.name}</span>
-          <button class="logout-btn" id="logoutBtn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-            Sign Out
+        <nav class="sidebar-nav">
+          ${sidebarNavHTML}
+        </nav>
+        <button class="dash-logout-btn" id="logoutBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          Sign Out
+        </button>
+        <div class="sidebar-footer">
+          <div class="sidebar-footer-avatar" style="background:${avatarColor}">${initials}</div>
+          <div class="sidebar-footer-info">
+            <span class="sidebar-footer-name">${record.name}</span>
+            <span class="sidebar-footer-role">${meta.label}</span>
+          </div>
+        </div>
+      </aside>
+      <main class="dash-main">
+        <div class="dash-topbar">
+          <div class="dash-greeting">
+            <h1>Hello, ${record.name.split(' ')[0]}</h1>
+            <p>${meta.dashGreeting}</p>
+          </div>
+          <button class="emergency-btn" id="emergencyBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.1 2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7 12.8 12.8 0 0 0 .7 2.8 2 2 0 0 1-.5 2.1L8.1 9.7a16 16 0 0 0 6 6l1.1-1.1a2 2 0 0 1 2.1-.5 12.8 12.8 0 0 0 2.8.7 2 2 0 0 1 1.7 2z"/></svg>
+            Emergency Help
           </button>
         </div>
-      </header>
-      <div class="dashboard-body">
-        <div class="dashboard-welcome">
-          <h1>Good ${getTimeGreeting()}, ${record.name.split(' ')[0]}</h1>
-          <p>${meta.dashGreeting}</p>
+        <div class="dash-content">
+          ${mainContentHTML}
         </div>
-        <div class="dash-grid">
-          ${getDashboardCards(role)}
-        </div>
-      </div>
+      </main>
     `;
 
     document.body.appendChild(page);
+
+    // Animate health rings after paint
+    if (role === 'patient') {
+      requestAnimationFrame(() => {
+        setTimeout(() => animateHealthRings(), 100);
+      });
+    }
 
     // Logout handler
     $('#logoutBtn').addEventListener('click', () => {
@@ -320,6 +366,162 @@
       $('.main-container').style.display = 'flex';
       usernameEl.value = '';
       passwordEl.value = '';
+    });
+
+    // Med "Take now" buttons
+    page.querySelectorAll('.med-action-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = btn.closest('.medication-item');
+        const check = item.querySelector('.med-check');
+        const name = item.querySelector('.med-name');
+        check.classList.add('taken');
+        name.classList.add('taken-text');
+        btn.textContent = 'Taken ✓';
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'default';
+      });
+    });
+  }
+
+  // -------- Patient Dashboard Content --------
+  function getPatientDashboard(record) {
+    const circumference = 2 * Math.PI * 42; // r=42
+
+    return `
+      <!-- Health Summary -->
+      <div class="health-summary-card">
+        <h2 class="health-summary-title">Your Health Summary</h2>
+        <div class="health-rings">
+          <div class="health-ring">
+            <div class="ring-container">
+              <svg viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="42"/>
+                <circle class="ring-progress green" cx="50" cy="50" r="42"
+                  stroke-dasharray="${circumference}"
+                  stroke-dashoffset="${circumference}"
+                  data-target="${circumference * 0.25}"/>
+              </svg>
+              <div class="ring-icon green">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              </div>
+            </div>
+            <span class="ring-label">Active</span>
+          </div>
+          <div class="health-ring">
+            <div class="ring-container">
+              <svg viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="42"/>
+                <circle class="ring-progress blue" cx="50" cy="50" r="42"
+                  stroke-dasharray="${circumference}"
+                  stroke-dashoffset="${circumference}"
+                  data-target="${circumference * 0.3}"/>
+              </svg>
+              <div class="ring-icon blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 12.8 3a7 7 0 0 0 8.2 9.8z"/></svg>
+              </div>
+            </div>
+            <span class="ring-label">7h 20m</span>
+          </div>
+          <div class="health-ring">
+            <div class="ring-container">
+              <svg viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="42"/>
+                <circle class="ring-progress orange" cx="50" cy="50" r="42"
+                  stroke-dasharray="${circumference}"
+                  stroke-dashoffset="${circumference}"
+                  data-target="${circumference * 0.35}"/>
+              </svg>
+              <div class="ring-icon orange">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21.3l7.8-7.8 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>
+              </div>
+            </div>
+            <span class="ring-label">BP</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-column: Appointments + Medications -->
+      <div class="dash-two-col">
+        <div class="dash-section-card">
+          <h3 class="section-card-title">Upcoming Appointments</h3>
+          <div class="appointment-item">
+            <div class="appt-date-badge">
+              <span class="appt-month">Oct</span>
+              <span class="appt-day">14</span>
+            </div>
+            <div class="appt-details">
+              <div class="appt-doctor">Dr. Sarah Jenkins</div>
+              <div class="appt-type">Cardiology Follow-up</div>
+            </div>
+            <button class="appt-action-btn primary">Join Call</button>
+          </div>
+          <div class="appointment-item">
+            <div class="appt-date-badge">
+              <span class="appt-month">Nov</span>
+              <span class="appt-day">02</span>
+            </div>
+            <div class="appt-details">
+              <div class="appt-doctor">Lab Work</div>
+              <div class="appt-type">Routine Blood Test</div>
+            </div>
+            <button class="appt-action-btn secondary">Reschedule</button>
+          </div>
+        </div>
+
+        <div class="dash-section-card">
+          <h3 class="section-card-title">Medication Tracker</h3>
+          <div class="medication-item">
+            <div class="med-check taken">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+            <div class="med-info">
+              <div class="med-name taken-text">Lisinopril (10mg)</div>
+              <div class="med-schedule">Morning • 08:00 AM</div>
+            </div>
+          </div>
+          <div class="medication-item">
+            <div class="med-check">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+            <div class="med-info">
+              <div class="med-name">Atorvastatin (20mg)</div>
+              <div class="med-schedule">Evening • 08:00 PM</div>
+            </div>
+            <button class="med-action-btn">Take now</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lumi Assistant -->
+      <div class="lumi-assistant-card">
+        <div class="lumi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a6 6 0 0 0-6 6c0 2.2 1.2 4.2 3 5.2V22h6v-8.8c1.8-1 3-3 3-5.2a6 6 0 0 0-6-6z"/></svg>
+        </div>
+        <div class="lumi-info">
+          <div class="lumi-title">Lumi Assistant</div>
+          <div class="lumi-subtitle">Always here to help. Ask me anything about your health.</div>
+        </div>
+        <button class="lumi-chat-btn">Start Chat</button>
+      </div>
+    `;
+  }
+
+  // -------- Generic Dashboard (Doctor, Admin, Lab) --------
+  function getGenericDashboard(record, role, meta) {
+    return `
+      <div class="dash-grid">
+        ${getDashboardCards(role)}
+      </div>
+    `;
+  }
+
+  // -------- Animate Health Rings --------
+  function animateHealthRings() {
+    document.querySelectorAll('.ring-progress').forEach(ring => {
+      const dashArray = parseFloat(ring.getAttribute('stroke-dasharray'));
+      const targetOffset = parseFloat(ring.getAttribute('data-target'));
+      ring.style.strokeDashoffset = dashArray - (dashArray - targetOffset);
     });
   }
 
@@ -338,10 +540,6 @@
         { title: 'Blood Pressure', value: '120/80', desc: 'Normal range', accent: 'blue', icon: 'activity' },
         { title: 'Glucose Level', value: '102 mg/dL', desc: 'Fasting — within range', accent: 'amber', icon: 'droplet' },
         { title: 'SpO₂', value: '98%', desc: 'Oxygen saturation normal', accent: 'green', icon: 'wind' },
-        { title: 'Upcoming Appointments', value: '2', desc: 'Next: Dr. Sharma — Apr 12', accent: 'purple', icon: 'calendar' },
-        { title: 'Medications', value: '4 Active', desc: '1 refill due in 3 days', accent: 'amber', icon: 'pill' },
-        { title: 'Lab Results', value: '3 New', desc: 'CBC, Lipid Panel, HbA1c', accent: 'blue', icon: 'flask' },
-        { title: 'Mental Health', value: '😊 Good', desc: 'Last check-in: Today 9:15 AM', accent: 'green', icon: 'smile' },
       ],
       doctor: [
         { title: 'Patient Queue', value: '14', desc: 'P1: 2 · P2: 4 · P3: 5 · P4/5: 3', accent: 'blue', icon: 'users' },
