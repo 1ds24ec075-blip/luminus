@@ -999,6 +999,7 @@ a:hover { color: var(--accent-soft); }
 .ring-progress.green { stroke: var(--dash-green); }
 .ring-progress.blue { stroke: var(--dash-accent); }
 .ring-progress.orange { stroke: var(--dash-orange); }
+.ring-progress.purple { stroke: var(--dash-purple); }
 
 .ring-icon {
   position: absolute;
@@ -1019,6 +1020,7 @@ a:hover { color: var(--accent-soft); }
 .ring-icon.green svg { color: var(--dash-green); }
 .ring-icon.blue svg { color: var(--dash-accent); }
 .ring-icon.orange svg { color: var(--dash-orange); }
+.ring-icon.purple svg { color: var(--dash-purple); }
 
 .ring-label {
   font-size: 0.82rem;
@@ -1615,3 +1617,315 @@ a:hover { color: var(--accent-soft); }
   }
 }
 
+
+/* ── Reports & Medical Records ── */
+
+.reports-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.report-item {
+  background: var(--dash-card);
+  border: 1px solid var(--dash-border);
+  border-radius: 16px;
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  transition: all 0.3s var(--ease);
+  box-shadow: var(--dash-shadow-sm);
+}
+
+.report-item:hover {
+  box-shadow: var(--dash-shadow-md);
+  border-color: rgba(67, 97, 238, 0.2);
+  transform: translateX(4px);
+}
+
+.report-icon-box {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--dash-accent-light);
+  color: var(--dash-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.report-icon-box svg {
+  width: 24px;
+  height: 24px;
+}
+
+.report-info {
+  flex: 1;
+}
+
+.report-name {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--dash-text);
+  margin-bottom: 2px;
+}
+
+.report-meta {
+  font-size: 0.82rem;
+  color: var(--dash-text-muted);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.report-status {
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-ready {
+  background: var(--dash-green-light);
+  color: var(--dash-green);
+}
+
+.status-pending {
+  background: var(--dash-orange-light);
+  color: var(--dash-orange);
+}
+
+.report-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.download-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  background: var(--dash-accent-light);
+  border: 1px solid rgba(67, 97, 238, 0.15);
+  border-radius: 10px;
+  color: var(--dash-accent);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+
+.download-btn:hover {
+  background: var(--dash-accent);
+  color: #fff;
+  border-color: var(--dash-accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(67, 97, 238, 0.15);
+}
+
+.download-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Medication Dashboard ── */
+
+.meds-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.interaction-warning {
+  background: var(--dash-red-light);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--dash-red);
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.warning-icon { width: 20px; height: 20px; flex-shrink: 0; }
+
+.med-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.med-detail-card {
+  background: var(--dash-card);
+  border: 1px solid var(--dash-border);
+  border-radius: 18px;
+  padding: 20px;
+  position: relative;
+  transition: all 0.3s var(--ease);
+}
+
+.med-detail-card:hover { transform: translateY(-3px); box-shadow: var(--dash-shadow-md); }
+
+.med-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.med-icon-box { width: 40px; height: 40px; border-radius: 10px; background: var(--dash-accent-light); color: var(--dash-accent); display: flex; align-items: center; justify-content: center; }
+.med-title-group { flex: 1; }
+.med-primary-name { font-size: 1rem; font-weight: 700; color: var(--dash-text); }
+.med-dosage { font-size: 0.82rem; color: var(--dash-text-muted); }
+
+.dosage-schedule {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.schedule-pill {
+  flex: 1;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--dash-bg);
+  text-align: center;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+
+.schedule-pill.active {
+  background: var(--dash-accent-light);
+  border-color: var(--dash-accent);
+  color: var(--dash-accent);
+}
+
+.sched-time { display: block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-bottom: 2px; }
+.sched-hour { font-size: 0.88rem; font-weight: 500; }
+
+/* ── Care Timeline Dashboard ── */
+
+.timeline-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.timeline-view {
+  position: relative;
+  padding-left: 32px;
+  margin-top: 20px;
+}
+
+.timeline-view::before {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--dash-border);
+}
+
+.timeline-event {
+  position: relative;
+  margin-bottom: 32px;
+}
+
+.timeline-event:last-child { margin-bottom: 0; }
+
+.event-marker {
+  position: absolute;
+  left: -32px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--dash-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.event-marker::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  background: var(--dash-accent);
+  border-radius: 50%;
+}
+
+.event-content {
+  background: var(--dash-card);
+  border: 1px solid var(--dash-border);
+  border-radius: 16px;
+  padding: 18px 24px;
+  box-shadow: var(--dash-shadow-sm);
+}
+
+.event-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.event-tag { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: var(--dash-accent); letter-spacing: 0.5px; }
+.event-date { font-size: 0.82rem; color: var(--dash-text-muted); }
+.event-title { font-size: 1.05rem; font-weight: 700; color: var(--dash-text); margin-bottom: 6px; }
+.event-desc { font-size: 0.88rem; color: var(--dash-text-secondary); line-height: 1.5; }
+
+/* ── Billing & Insurance Dashboard ── */
+
+.billing-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.billing-table-card {
+  background: var(--dash-card);
+  border: 1px solid var(--dash-border);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: var(--dash-shadow-sm);
+  margin-top: 10px;
+}
+
+.billing-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.billing-table th {
+  background: var(--dash-bg);
+  padding: 14px 20px;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--dash-text-muted);
+  border-bottom: 1px solid var(--dash-border);
+}
+
+.billing-table td {
+  padding: 16px 20px;
+  font-size: 0.88rem;
+  color: var(--dash-text);
+  border-bottom: 1px solid var(--dash-border-light);
+}
+
+.billing-table tr:last-child td { border-bottom: none; }
+
+.status-paid { color: var(--dash-green); font-weight: 600; }
+.status-pending-bill { color: var(--dash-orange); font-weight: 600; }
+.status-claimed { color: var(--dash-accent); font-weight: 600; }
+
+.total-summary {
+  display: flex;
+  justify-content: flex-end;
+  padding: 20px;
+  background: var(--dash-bg);
+  gap: 40px;
+}
+
+.summary-item { text-align: right; }
+.summary-label { font-size: 0.78rem; color: var(--dash-text-muted); margin-bottom: 4px; }
+.summary-value { font-size: 1.2rem; font-weight: 700; color: var(--dash-text); }
