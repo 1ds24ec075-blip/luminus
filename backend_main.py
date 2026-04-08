@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         MediCore AI — Complete Backend (main.py)             ║
-║   MCP-powered Hospital Intelligence Platform                 ║
-║   FastAPI + LangGraph + SQLite + Redis + Chroma              ║
+║         DataGod Health — AI Hospital Intelligence            ║
+║   Conversational SQL + Live Visuals + Operational Alerts     ║
+║   FastAPI + LangGraph + SQLite + Plotly                      ║
 ╚══════════════════════════════════════════════════════════════╝
 
 INSTALL DEPENDENCIES:
@@ -39,7 +39,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("medicore")
+logger = logging.getLogger("datagod")
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG
@@ -756,25 +756,7 @@ def health():
             "chroma_docs": mental_health_collection.count(),
             "model": GEMINI_MODEL if AI_PROVIDER == "gemini" else CLAUDE_MODEL, "timestamp": datetime.utcnow().isoformat()}
 
-# ─────────────────────────────────────────────────────────────
-# STATIC FILES (Serve Frontend dist)
-# ─────────────────────────────────────────────────────────────
-# This serves the React build from frontend/dist
-# We use a custom exception handler for 404s to support React Router (SPA)
-if os.path.exists("frontend/dist"):
-    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # If the path looks like an API call or websocket, don't serve index.html
-        # (Though those should be caught by their specific routes first)
-        if full_path.startswith(("agents", "orchestrator", "dashboard", "mcp", "voice")):
-            raise HTTPException(status_code=404, detail="API route not found")
-        
-        index_path = os.path.join("frontend/dist", "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return {"error": "Frontend build not found. Run 'npm run build' in frontend folder."}
 
 # ─────────────────────────────────────────────────────────────
 # ROUTES — MCP CONTEXT
@@ -852,21 +834,39 @@ def search_sessions(patient_id: str, query: str):
     return {"results": mental_health_agent.search_similar_sessions(patient_id, query)}
 
 # ─────────────────────────────────────────────────────────────
-# ROUTES — RURAL ACCESS AGENT
+# AGENT 4: DATAGOD CONVERSATIONAL ANALYTICS
 # ─────────────────────────────────────────────────────────────
-@app.post("/agents/rural/triage")
-def triage_patient(data: TriageInput):
-    return rural_agent.triage(data.patient_id, data.symptoms, data.language)
+@app.post("/chat")
+def chat_analytics(data: dict):
+    """
+    Main entry point for DataGod Health conversational analytics.
+    Expects { "question": "..." }
+    """
+    question = data.get("question", "")
+    return clinical_agent.execute_nl_query(question)
 
-@app.post("/agents/rural/scheme-eligibility")
-def scheme_eligibility(data: SchemeInput):
-    ctx = mcp.get(data.patient_id)
-    profile = {**data.dict(), **(ctx.get("diagnoses", [{}])[0] if ctx.get("diagnoses") else {})}
-    return rural_agent.check_scheme_eligibility(profile)
+@app.post("/dashboard/pin")
+def pin_chart(data: dict):
+    """
+    Pins a chart visualization to the operations dashboard.
+    """
+    pin_id = str(uuid.uuid4())
+    execute_db(OPERATIONS_DB, 
+               "INSERT INTO pinned_charts (id, chart_config, created_at) VALUES (?,?,?)",
+               (pin_id, json.dumps(data.get("config")), datetime.utcnow().isoformat()))
+    return {"status": "pinned", "id": pin_id}
 
-@app.get("/agents/rural/facilities")
-def find_facilities(lat: float = 12.9716, lng: float = 77.5946, specialty: str = "General Medicine"):
-    return rural_agent.find_facilities(lat, lng, specialty)
+@app.get("/dashboard/pinned")
+def list_pinned():
+    return query_db(OPERATIONS_DB, "SELECT * FROM pinned_charts ORDER BY created_at DESC")
+
+@app.post("/dashboard/{pin_id}/share")
+def share_chart(pin_id: str):
+    token = str(uuid.uuid4())[:8]
+    execute_db(OPERATIONS_DB, 
+               "INSERT INTO shares (token, pin_id, created_at) VALUES (?,?,?)",
+               (token, pin_id, datetime.utcnow().isoformat()))
+    return {"share_url": f"/dashboard/share/{token}", "token": token}
 
 # ─────────────────────────────────────────────────────────────
 # ROUTES — SCHEDULING AGENT
@@ -1014,6 +1014,24 @@ async def transcribe_voice(file: UploadFile = File(...)):
         return {"error": "faster-whisper not installed. Run: pip install faster-whisper", "success": False}
     except Exception as e:
         return {"error": str(e), "success": False}
+
+# ─────────────────────────────────────────────────────────────
+# STATIC FILES (Serve Frontend dist) — MUST BE LAST ROUTE
+# ─────────────────────────────────────────────────────────────
+# This serves the React build from frontend/dist
+# We use a custom catch-all for 404s to support React Router (SPA)
+if os.path.exists("frontend/dist"):
+    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # We allow all paths to fallback to index.html for SPA routing,
+        # but only if they don't match the API prefixes above.
+        # FastAPI matches in order, so this will only hit if no other route matched.
+        index_path = os.path.join("frontend/dist", "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "Frontend build not found. Run 'npm run build' in frontend folder."}
 
 if __name__ == "__main__":
     import uvicorn

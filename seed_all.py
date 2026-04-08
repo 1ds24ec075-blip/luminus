@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-seed_all.py — MediCore AI Complete Dataset Seeder
-One command to build a fully working demo hospital.
+seed_all.py — DataGod Health Complete Dataset Seeder
+One command to build a fully working demo hospital intelligence platform.
 
 Usage:
     python seed_all.py                            # full run
@@ -275,6 +275,12 @@ def init_operations_db(path):
         title TEXT, sql_query TEXT, chart_type TEXT,
         share_token TEXT UNIQUE, created_by TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS shares (
+        token TEXT PRIMARY KEY,
+        pin_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (pin_id) REFERENCES pinned_charts(id)
     );
     CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -692,7 +698,7 @@ def main():
         os.getenv("MENTAL_HEALTH_SESSIONS_PATH", "./data/mental_health/sessions.json"))
 
     print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("  MediCore AI — Dataset Seeder")
+    print("  DataGod Health — Dataset Seeder")
     print(f"  City: {args.city.title()} | Patients: {args.patients} | Days: {args.days}")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
