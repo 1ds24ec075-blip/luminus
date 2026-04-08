@@ -1,0 +1,15 @@
+# Frontend-only repository mode
+# Ignore everything by default
+*
+
+# Keep gitignore itself
+!.gitignore
+
+# Keep frontend files in repo root
+!index.html
+!styles.css
+!app.js
+
+# If frontend is moved into this folder, keep it too
+!frontend-ui/
+!frontend-ui/**
