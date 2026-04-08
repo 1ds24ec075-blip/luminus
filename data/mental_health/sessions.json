@@ -1,0 +1,377 @@
+[
+  {
+    "session_id": "MHS0001",
+    "patient_id": "PT0043",
+    "date": "2026-03-26T17:10:21.945652",
+    "session_text": "Initial assessment for Ramesh Reddy. Chief complaint: family conflict. History reveals depression contributing to current state. PHQ-9: 17. GAD-7: 5. Diagnosis: PTSD (F43.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 2,
+    "risk_level": "low",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.35,
+    "session_number": 11
+  },
+  {
+    "session_id": "MHS0002",
+    "patient_id": "PT0005",
+    "date": "2026-02-13T17:10:21.945652",
+    "session_text": "Initial assessment for Leela Menon. Chief complaint: family conflict. History reveals depression contributing to current state. PHQ-9: 15. GAD-7: 19. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 4,
+    "risk_level": "medium",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.71,
+    "session_number": 8
+  },
+  {
+    "session_id": "MHS0003",
+    "patient_id": "PT0032",
+    "date": "2026-03-23T17:10:21.945652",
+    "session_text": "Patient Rekha Nair presented with persistent family conflict and depression. Reported difficulty sleeping for 16 weeks. Mood score self-reported as 4/10. Expressed feelings of numbness. Session focused on cognitive restructuring. Patient responded well to breathing exercises. Risk assessment: high. Plan: weekly sessions, CBT workbook assigned.",
+    "mood_score": 4,
+    "risk_level": "high",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.53,
+    "session_number": 1
+  },
+  {
+    "session_id": "MHS0004",
+    "patient_id": "PT0015",
+    "date": "2026-02-27T17:10:21.945652",
+    "session_text": "Initial assessment for Anitha Shetty. Chief complaint: chronic illness adjustment. History reveals pain contributing to current state. PHQ-9: 8. GAD-7: 11. Diagnosis: Moderate Depressive Episode (F32.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "low",
+    "themes": [
+      "chronic illness adjustment",
+      "pain",
+      "hopelessness"
+    ],
+    "anxiety_score": 0.17,
+    "session_number": 4
+  },
+  {
+    "session_id": "MHS0005",
+    "patient_id": "PT0009",
+    "date": "2026-02-21T17:10:21.945652",
+    "session_text": "Follow-up with Saritha Krishnan. Reports some worsening since last session. relationship problems remains primary concern. Discussed coping mechanisms around self-esteem. Mentioned health concerns as significant trigger. Sleep has improved. Mood: 4/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 4,
+    "risk_level": "low",
+    "themes": [
+      "relationship problems",
+      "self-esteem",
+      "communication"
+    ],
+    "anxiety_score": 0.77,
+    "session_number": 9
+  },
+  {
+    "session_id": "MHS0006",
+    "patient_id": "PT0037",
+    "date": "2026-03-24T17:10:21.945652",
+    "session_text": "Initial assessment for Sunil Verma. Chief complaint: family conflict. History reveals depression contributing to current state. PHQ-9: 5. GAD-7: 14. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "high",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.3,
+    "session_number": 3
+  },
+  {
+    "session_id": "MHS0007",
+    "patient_id": "PT0005",
+    "date": "2026-01-14T17:10:21.945652",
+    "session_text": "Initial assessment for Kavitha Sharma. Chief complaint: work stress. History reveals anxiety contributing to current state. PHQ-9: 10. GAD-7: 14. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "medium",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep issues"
+    ],
+    "anxiety_score": 0.35,
+    "session_number": 1
+  },
+  {
+    "session_id": "MHS0008",
+    "patient_id": "PT0008",
+    "date": "2026-01-18T17:10:21.945652",
+    "session_text": "Follow-up with Leela Menon. Reports some worsening since last session. family conflict remains primary concern. Discussed coping mechanisms around depression. Mentioned work deadlines as significant trigger. Sleep has improved. Mood: 7/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 7,
+    "risk_level": "medium",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.62,
+    "session_number": 3
+  },
+  {
+    "session_id": "MHS0009",
+    "patient_id": "PT0010",
+    "date": "2026-02-09T17:10:21.945652",
+    "session_text": "Initial assessment for Sunil Naidu. Chief complaint: work stress. History reveals anxiety contributing to current state. PHQ-9: 10. GAD-7: 5. Diagnosis: Adjustment Disorder (F43.2). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 2,
+    "risk_level": "medium",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep issues"
+    ],
+    "anxiety_score": 0.63,
+    "session_number": 12
+  },
+  {
+    "session_id": "MHS0010",
+    "patient_id": "PT0039",
+    "date": "2026-03-13T17:10:21.945652",
+    "session_text": "Patient Vinod Joshi presented with persistent work stress and anxiety. Reported difficulty sleeping for 2 weeks. Mood score self-reported as 6/10. Expressed feelings of anxiety. Session focused on cognitive restructuring. Patient responded well to breathing exercises. Risk assessment: low. Plan: weekly sessions, CBT workbook assigned.",
+    "mood_score": 6,
+    "risk_level": "low",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep issues"
+    ],
+    "anxiety_score": 0.48,
+    "session_number": 9
+  },
+  {
+    "session_id": "MHS0011",
+    "patient_id": "PT0010",
+    "date": "2026-04-08T17:10:21.945652",
+    "session_text": "Initial assessment for Leela Krishnan. Chief complaint: relationship problems. History reveals self-esteem contributing to current state. PHQ-9: 18. GAD-7: 8. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 8,
+    "risk_level": "low",
+    "themes": [
+      "relationship problems",
+      "self-esteem",
+      "communication"
+    ],
+    "anxiety_score": 0.69,
+    "session_number": 5
+  },
+  {
+    "session_id": "MHS0012",
+    "patient_id": "PT0046",
+    "date": "2026-03-21T17:10:21.945652",
+    "session_text": "Initial assessment for Suresh Kumar. Chief complaint: grief. History reveals loss contributing to current state. PHQ-9: 14. GAD-7: 5. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "low",
+    "themes": [
+      "grief",
+      "loss",
+      "coping"
+    ],
+    "anxiety_score": 0.13,
+    "session_number": 3
+  },
+  {
+    "session_id": "MHS0013",
+    "patient_id": "PT0001",
+    "date": "2026-01-28T17:10:21.945652",
+    "session_text": "Follow-up with Santosh Iyer. Reports marked improvement since last session. trauma remains primary concern. Discussed coping mechanisms around ptsd. Mentioned work deadlines as significant trigger. Sleep has worsened. Mood: 7/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 7,
+    "risk_level": "low",
+    "themes": [
+      "trauma",
+      "ptsd",
+      "hypervigilance"
+    ],
+    "anxiety_score": 0.78,
+    "session_number": 5
+  },
+  {
+    "session_id": "MHS0014",
+    "patient_id": "PT0042",
+    "date": "2026-03-01T17:10:21.945652",
+    "session_text": "Initial assessment for Ramesh Iyer. Chief complaint: chronic illness adjustment. History reveals pain contributing to current state. PHQ-9: 17. GAD-7: 10. Diagnosis: Adjustment Disorder (F43.2). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 8,
+    "risk_level": "low",
+    "themes": [
+      "chronic illness adjustment",
+      "pain",
+      "hopelessness"
+    ],
+    "anxiety_score": 0.89,
+    "session_number": 5
+  },
+  {
+    "session_id": "MHS0015",
+    "patient_id": "PT0032",
+    "date": "2026-02-14T17:10:21.945652",
+    "session_text": "Initial assessment for Prakash Verma. Chief complaint: panic attacks. History reveals phobia contributing to current state. PHQ-9: 11. GAD-7: 11. Diagnosis: PTSD (F43.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 6,
+    "risk_level": "low",
+    "themes": [
+      "panic attacks",
+      "phobia",
+      "avoidance"
+    ],
+    "anxiety_score": 0.85,
+    "session_number": 10
+  },
+  {
+    "session_id": "MHS0016",
+    "patient_id": "PT0014",
+    "date": "2026-03-11T17:10:21.945652",
+    "session_text": "Initial assessment for Naresh Hegde. Chief complaint: relationship problems. History reveals self-esteem contributing to current state. PHQ-9: 19. GAD-7: 8. Diagnosis: Adjustment Disorder (F43.2). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 7,
+    "risk_level": "medium",
+    "themes": [
+      "relationship problems",
+      "self-esteem",
+      "communication"
+    ],
+    "anxiety_score": 0.81,
+    "session_number": 9
+  },
+  {
+    "session_id": "MHS0017",
+    "patient_id": "PT0007",
+    "date": "2026-02-09T17:10:21.945652",
+    "session_text": "Follow-up with Kiran Menon. Reports marked improvement since last session. family conflict remains primary concern. Discussed coping mechanisms around depression. Mentioned family conflict as significant trigger. Sleep has worsened. Mood: 8/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 8,
+    "risk_level": "low",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.81,
+    "session_number": 7
+  },
+  {
+    "session_id": "MHS0018",
+    "patient_id": "PT0038",
+    "date": "2026-01-08T17:10:21.945652",
+    "session_text": "Patient Radha Rao presented with persistent trauma and ptsd. Reported difficulty sleeping for 5 weeks. Mood score self-reported as 6/10. Expressed feelings of disconnection. Session focused on cognitive restructuring. Patient responded well to breathing exercises. Risk assessment: high. Plan: weekly sessions, CBT workbook assigned.",
+    "mood_score": 6,
+    "risk_level": "high",
+    "themes": [
+      "trauma",
+      "ptsd",
+      "hypervigilance"
+    ],
+    "anxiety_score": 0.34,
+    "session_number": 3
+  },
+  {
+    "session_id": "MHS0019",
+    "patient_id": "PT0011",
+    "date": "2026-01-28T17:10:21.945652",
+    "session_text": "Initial assessment for Lakshmi Rao. Chief complaint: work stress. History reveals anxiety contributing to current state. PHQ-9: 15. GAD-7: 10. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "low",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep issues"
+    ],
+    "anxiety_score": 0.92,
+    "session_number": 11
+  },
+  {
+    "session_id": "MHS0020",
+    "patient_id": "PT0004",
+    "date": "2026-02-28T17:10:21.945652",
+    "session_text": "Initial assessment for Priya Bhat. Chief complaint: family conflict. History reveals depression contributing to current state. PHQ-9: 11. GAD-7: 19. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 6,
+    "risk_level": "low",
+    "themes": [
+      "family conflict",
+      "depression",
+      "isolation"
+    ],
+    "anxiety_score": 0.93,
+    "session_number": 5
+  },
+  {
+    "session_id": "MHS0021",
+    "patient_id": "PT0023",
+    "date": "2026-03-14T17:10:21.945652",
+    "session_text": "Follow-up with Suresh Hegde. Reports no significant change since last session. work stress remains primary concern. Discussed coping mechanisms around anxiety. Mentioned work deadlines as significant trigger. Sleep has worsened. Mood: 8/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 8,
+    "risk_level": "low",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep issues"
+    ],
+    "anxiety_score": 0.92,
+    "session_number": 10
+  },
+  {
+    "session_id": "MHS0022",
+    "patient_id": "PT0010",
+    "date": "2026-04-06T17:10:21.945652",
+    "session_text": "Initial assessment for Savitha Reddy. Chief complaint: panic attacks. History reveals phobia contributing to current state. PHQ-9: 14. GAD-7: 12. Diagnosis: Generalized Anxiety Disorder (F41.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 5,
+    "risk_level": "low",
+    "themes": [
+      "panic attacks",
+      "phobia",
+      "avoidance"
+    ],
+    "anxiety_score": 0.72,
+    "session_number": 2
+  },
+  {
+    "session_id": "MHS0023",
+    "patient_id": "PT0027",
+    "date": "2026-02-16T17:10:21.945652",
+    "session_text": "Patient Ravi Kumar presented with persistent chronic illness adjustment and pain. Reported difficulty sleeping for 6 weeks. Mood score self-reported as 2/10. Expressed feelings of anxiety. Session focused on cognitive restructuring. Patient responded well to breathing exercises. Risk assessment: medium. Plan: weekly sessions, CBT workbook assigned.",
+    "mood_score": 2,
+    "risk_level": "medium",
+    "themes": [
+      "chronic illness adjustment",
+      "pain",
+      "hopelessness"
+    ],
+    "anxiety_score": 0.32,
+    "session_number": 11
+  },
+  {
+    "session_id": "MHS0024",
+    "patient_id": "PT0018",
+    "date": "2026-02-18T17:10:21.945652",
+    "session_text": "Follow-up with Asha Iyer. Reports slight improvement since last session. chronic illness adjustment remains primary concern. Discussed coping mechanisms around pain. Mentioned health concerns as significant trigger. Sleep has worsened. Mood: 7/10. No active suicidal ideation. Continuing current plan.",
+    "mood_score": 7,
+    "risk_level": "medium",
+    "themes": [
+      "chronic illness adjustment",
+      "pain",
+      "hopelessness"
+    ],
+    "anxiety_score": 0.55,
+    "session_number": 6
+  },
+  {
+    "session_id": "MHS0025",
+    "patient_id": "PT0041",
+    "date": "2026-03-05T17:10:21.945652",
+    "session_text": "Initial assessment for Arun Hegde. Chief complaint: grief. History reveals loss contributing to current state. PHQ-9: 12. GAD-7: 20. Diagnosis: PTSD (F43.1). Treatment plan initiated: therapy + psychoeducation. Follow-up in 2 weeks.",
+    "mood_score": 3,
+    "risk_level": "medium",
+    "themes": [
+      "grief",
+      "loss",
+      "coping"
+    ],
+    "anxiety_score": 0.67,
+    "session_number": 3
+  }
+]

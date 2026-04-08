@@ -23,7 +23,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ─────────────────────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────────────────────
-const API = import.meta.env.VITE_API_URL || (window.location.port === "8000" ? window.location.origin : "http://localhost:8000");
+const API = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : "http://localhost:8000");
 const WS_URL = API.replace("http", "ws") + "/ws";
 
 // ─────────────────────────────────────────────────────────────

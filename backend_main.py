@@ -757,6 +757,26 @@ def health():
             "model": GEMINI_MODEL if AI_PROVIDER == "gemini" else CLAUDE_MODEL, "timestamp": datetime.utcnow().isoformat()}
 
 # ─────────────────────────────────────────────────────────────
+# STATIC FILES (Serve Frontend dist)
+# ─────────────────────────────────────────────────────────────
+# This serves the React build from frontend/dist
+# We use a custom exception handler for 404s to support React Router (SPA)
+if os.path.exists("frontend/dist"):
+    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # If the path looks like an API call or websocket, don't serve index.html
+        # (Though those should be caught by their specific routes first)
+        if full_path.startswith(("agents", "orchestrator", "dashboard", "mcp", "voice")):
+            raise HTTPException(status_code=404, detail="API route not found")
+        
+        index_path = os.path.join("frontend/dist", "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "Frontend build not found. Run 'npm run build' in frontend folder."}
+
+# ─────────────────────────────────────────────────────────────
 # ROUTES — MCP CONTEXT
 # ─────────────────────────────────────────────────────────────
 @app.get("/mcp/context/{patient_id}")
@@ -994,27 +1014,6 @@ async def transcribe_voice(file: UploadFile = File(...)):
         return {"error": "faster-whisper not installed. Run: pip install faster-whisper", "success": False}
     except Exception as e:
         return {"error": str(e), "success": False}
-
-# ─────────────────────────────────────────────────────────────
-# FRONTEND — SERVE STATIC FILES
-# ─────────────────────────────────────────────────────────────
-# Mount the compiled React app
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-
-if os.path.exists(FRONTEND_DIR):
-    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # API routes should not be caught here (FastAPI priority handles this)
-        # But if the file exists in dist, serve it
-        file_path = os.path.join(FRONTEND_DIR, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        # Otherwise serve index.html for SPA routing
-        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-else:
-    logger.warning(f"⚠️ Frontend dist not found at {FRONTEND_DIR}. Run 'npm run build' in frontend folder.")
 
 if __name__ == "__main__":
     import uvicorn
