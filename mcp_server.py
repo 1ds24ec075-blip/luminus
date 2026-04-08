@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import re
+import math
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "luminus.db"
@@ -149,7 +150,9 @@ def get_patient_history_for_doctor(patient_id: int) -> Dict[str, Any]:
     # Get all reports (with anomalies but WITHOUT hospital/doctor names)
     reports = cur.execute(
         """
-        SELECT id, file_type, ocr_text, anomalies_json, ai_summary, created_at
+        SELECT id, file_type, ocr_text, anomalies_json,
+               COALESCE(ai_summary_admin, ai_summary) AS ai_summary,
+               created_at
         FROM reports WHERE patient_id = ?
         ORDER BY created_at DESC
     """,
@@ -527,6 +530,185 @@ def allocate_time_slot(
 
 
 # ─────────────────────────────────────────────────────────────────
+# Tool 7: Ambulance Geolocation and Dispatch
+# ─────────────────────────────────────────────────────────────────
+
+
+def _haversine_distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Compute great-circle distance between 2 coordinates in kilometers."""
+    r = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def list_nearby_ambulances(
+    latitude: float, longitude: float, limit: int = 5
+) -> Dict[str, Any]:
+    """List nearest available ambulances by distance from patient location."""
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        """
+        SELECT id, unit_name, vehicle_type, status, current_lat, current_lng, crew_info
+        FROM ambulances
+        WHERE status = 'available'
+        """
+    ).fetchall()
+    conn.close()
+
+    ambulances = []
+    for row in rows:
+        distance_km = _haversine_distance_km(
+            latitude,
+            longitude,
+            float(row["current_lat"]),
+            float(row["current_lng"]),
+        )
+        ambulances.append(
+            {
+                "id": row["id"],
+                "unit_name": row["unit_name"],
+                "vehicle_type": row["vehicle_type"],
+                "distance_km": round(distance_km, 2),
+                "crew_info": row["crew_info"],
+            }
+        )
+
+    ambulances.sort(key=lambda item: item["distance_km"])
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "available_count": len(ambulances),
+        "ambulances": ambulances[: max(1, int(limit))],
+    }
+
+
+def create_ambulance_dispatch(
+    patient_id: int,
+    latitude: float,
+    longitude: float,
+    severity: str = "urgent",
+    report_id: int | None = None,
+    requested_by_role: str = "system",
+    requested_by_id: int | None = None,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Dispatch nearest available ambulance and persist dispatch record."""
+    severity = (severity or "urgent").lower().strip()
+    if severity not in {"routine", "urgent", "critical"}:
+        severity = "urgent"
+
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        """
+        SELECT id, unit_name, vehicle_type, current_lat, current_lng, crew_info
+        FROM ambulances
+        WHERE status = 'available'
+        """
+    ).fetchall()
+
+    fallback_reroute = False
+    if not rows:
+        # Demo-safe fallback: re-route nearest active unit if all are marked dispatched.
+        rows = cur.execute(
+            """
+            SELECT id, unit_name, vehicle_type, current_lat, current_lng, crew_info
+            FROM ambulances
+            WHERE status != 'maintenance'
+            """
+        ).fetchall()
+        fallback_reroute = True
+
+    if not rows:
+        conn.close()
+        return {
+            "status": "unavailable",
+            "message": "No active ambulance units at the moment.",
+        }
+
+    ranked = []
+    for row in rows:
+        distance_km = _haversine_distance_km(
+            latitude,
+            longitude,
+            float(row["current_lat"]),
+            float(row["current_lng"]),
+        )
+        ranked.append((distance_km, row))
+
+    ranked.sort(key=lambda item: item[0])
+    nearest_distance_km, nearest = ranked[0]
+
+    # Rough urban ETA model for hackathon demo.
+    speed_kmph = 28.0 if severity == "critical" else 24.0
+    eta_minutes = max(4, int(round((nearest_distance_km / speed_kmph) * 60 + 4)))
+
+    cur.execute(
+        """
+        UPDATE ambulances
+        SET status = 'dispatched',
+            assigned_patient_id = ?,
+            current_lat = ?,
+            current_lng = ?
+        WHERE id = ?
+        """,
+        (patient_id, latitude, longitude, nearest["id"]),
+    )
+
+    cur.execute(
+        """
+        INSERT INTO ambulance_dispatches (
+            ambulance_id, patient_id, report_id, requested_by_role,
+            requested_by_id, request_lat, request_lng,
+            distance_km, eta_minutes, severity, status, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dispatched', ?)
+        """,
+        (
+            nearest["id"],
+            patient_id,
+            report_id,
+            requested_by_role,
+            requested_by_id,
+            latitude,
+            longitude,
+            round(nearest_distance_km, 2),
+            eta_minutes,
+            severity,
+            notes,
+        ),
+    )
+    dispatch_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "dispatched",
+        "dispatch_id": dispatch_id,
+        "rerouted_existing_unit": fallback_reroute,
+        "ambulance": {
+            "id": nearest["id"],
+            "unit_name": nearest["unit_name"],
+            "vehicle_type": nearest["vehicle_type"],
+            "crew_info": nearest["crew_info"],
+        },
+        "distance_km": round(nearest_distance_km, 2),
+        "eta_minutes": eta_minutes,
+        "severity": severity,
+        "patient_id": patient_id,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
 # MCP Tool Definitions (for Claude via MCP bridge)
 # ─────────────────────────────────────────────────────────────────
 
@@ -574,6 +756,27 @@ AVAILABLE_TOOLS = {
             "esi_priority": "1-5 (1=resuscitation, 5=routine)",
         },
     },
+    "list_nearby_ambulances": {
+        "description": "List nearest available ambulances using latitude and longitude.",
+        "parameters": {
+            "latitude": "Patient latitude",
+            "longitude": "Patient longitude",
+            "limit": "Maximum rows to return",
+        },
+    },
+    "create_ambulance_dispatch": {
+        "description": "Dispatch nearest ambulance and create a dispatch record.",
+        "parameters": {
+            "patient_id": "ID of the patient",
+            "latitude": "Patient latitude",
+            "longitude": "Patient longitude",
+            "severity": "routine|urgent|critical",
+            "report_id": "Related report id (optional)",
+            "requested_by_role": "patient|doctor|admin|system",
+            "requested_by_id": "Caller id (optional)",
+            "notes": "Dispatch note",
+        },
+    },
 }
 
 
@@ -615,6 +818,25 @@ def handle_tool_call(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, An
             tool_input.get("patient_id"),
             tool_input.get("doctor_id"),
             tool_input.get("esi_priority", 3),
+        )
+
+    elif tool_name == "list_nearby_ambulances":
+        return list_nearby_ambulances(
+            float(tool_input.get("latitude")),
+            float(tool_input.get("longitude")),
+            int(tool_input.get("limit", 5)),
+        )
+
+    elif tool_name == "create_ambulance_dispatch":
+        return create_ambulance_dispatch(
+            int(tool_input.get("patient_id")),
+            float(tool_input.get("latitude")),
+            float(tool_input.get("longitude")),
+            str(tool_input.get("severity", "urgent")),
+            tool_input.get("report_id"),
+            str(tool_input.get("requested_by_role", "system")),
+            tool_input.get("requested_by_id"),
+            str(tool_input.get("notes", "")),
         )
 
     else:

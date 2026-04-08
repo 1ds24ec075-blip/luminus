@@ -1,0 +1,211 @@
+Luminus Hackathon Test Cases
+Date: 2026-04-09
+
+ONE WORKING DEMO (PATIENT -> ADMIN AI ACCEPT -> DOCTOR/LAB READY)
+1. Patient login using seeded user: patient@luminus.health / 9663731604.
+2. Click Emergency Help.
+3. Enter symptoms when prompted (for example: chest pain and palpitations).
+4. Confirm location on map and submit.
+5. Expect: patient sees ambulance ETA tracker (countdown timer).
+6. Admin login using seeded user: admin.admin@luminus.health / 9123456780.
+7. Expect: AI Emergency Workflow popup appears automatically.
+8. Click Accept AI Plan.
+9. Expect: success toast with bed allocation confirmation.
+10. Doctor login using seeded user: doctor.doc@luminus.health / 9988776655.
+11. Expect: urgent queue/alerts populated for immediate handling.
+12. Lab receives backend alert entry for AI suggested lab orders.
+
+DEMO AMBULANCE FLEET (Seeded in Database)
+The following ambulances are automatically pre-configured for the demo:
+- AMB-01: Basic unit (Driver: Ramesh K, Paramedic: Suresh M) - AVAILABLE
+- AMB-02: Advanced unit (Driver: Kiran P, Paramedic: Meera S, EMT: Raj N) - AVAILABLE
+- AMB-03: Cardiac unit (Driver: Anil R, Paramedic: Deepa K, Cardiologist on-call) - AVAILABLE
+- AMB-04: Advanced unit (Driver: Vikram S, Paramedic: Ananya C, EMT: Priya R) - AVAILABLE
+- AMB-05: Basic unit (Driver: Mohan V, Paramedic: Sita M) - AVAILABLE
+- AMB-06: Cardiac unit (Driver: Ravi K, Paramedic: Divya S, Cardiologist on-call) - AVAILABLE
+- AMB-07: Advanced unit (Driver: Ashok M, Paramedic: Neha P) - MAINTENANCE (shows fallback logic)
+
+When patient triggers emergency, the system automatically selects the nearest available ambulance.
+All ambulances are positioned across Bangalore and will dispatch with realistic ETA (4-8 minutes).
+
+Prerequisites
+1. Python venv installed and dependencies from requirements.txt installed.
+2. Server running: .venv/Scripts/python.exe -m uvicorn server:app --reload
+3. .env contains at least OPENAI_API_KEY.
+4. Optional free provider keys for model segregation:
+   GEMINI_API_KEY=...
+   GROQ_API_KEY=...
+
+Suggested .env additions
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_VISION_MODEL=gpt-4o-mini
+GEMINI_MODEL=gemini-1.5-flash
+GROQ_MODEL=llama-3.3-70b-versatile
+LUMINUS_SESSION_MEMORY_SIZE=40
+
+JUDGE PRESENTATION SCRIPT
+========================================
+Duration: ~5-7 minutes | 6 browser tabs open simultaneously
+Starting point: http://127.0.0.1:8000/
+
+[WINDOW 1 - PATIENT EMERGENCY]
+1. Open http://127.0.0.1:8000/ in first tab
+2. Login: email="patient@luminus.health" password="9663731604"
+3. Click "Emergency Help" button (red, bottom-right)
+4. Symptoms prompt: Type "chest pain and palpitations" 
+5. Map opens → Confirm location → Click "Submit Emergency"
+   >>> RESULT: Orange ETA countdown timer appears (4-8 min) showing closest ambulance
+   >>> UI shows: "Ambulance dispatched! Wait time: 6 minutes"
+
+[WINDOW 2 - ADMIN DASHBOARD]
+6. Open new tab, goto http://127.0.0.1:8000/
+7. Login: email="admin.admin@luminus.health" password="9123456780"
+8. AUTOMATIC: Within 12 seconds, dramatic orange "Emergencies Pending" popup appears
+   >>> Contains: Patient name, risk level, recommended doctor (e.g. "Dr. Vikram Patel"), 
+       bed assignment (e.g. "Critical Care Unit Bed 3"), lab orders, medications
+9. Click "Accept AI Plan" button (green)
+   >>> RESULT: Toast notification: "Emergency accepted. Bed allocated: CCU Bed 3. Doctor: Dr. Vikram Patel"
+
+[WINDOW 3 - DOCTOR VIEW]
+10. Open new tab, goto http://127.0.0.1:8000/
+11. Login: email="doctor.doc@luminus.health" password="9988776655"
+12. Navigate to "Urgent Queue" tab
+    >>> RESULT: Patient case now appears with "CRITICAL" badge + red alert banner
+    >>> Shows: Patient name, symptoms, assigned bed, recommended actions
+
+[WINDOW 4 - LAB SYSTEM]
+13. Open new tab, goto http://127.0.0.1:8000/
+14. Login any lab user (if available) or check backend logs
+    >>> RESULT: Lab received automated alert for suggested lab work (CBC, ECG, Troponin)
+
+[TALKING POINTS DURING DEMO]
+- "This ambulance system uses 6 realistic vehicles positioned across Bangalore"
+- "Patient dispatch is immediate with real-time ETA tracking"
+- "Admin receives AI-generated emergency plan automatically (1-2 second delay)"
+- "Doctor and lab are coordinated seamlessly with one click"
+- "System handles ambulance unavailability gracefully via fallback routing"
+- "All data persists across browser refresh (F5) thanks to localStorage"
+
+Quick Health Check
+TC-01
+- Open http://127.0.0.1:8000/health
+- Expect: ok=true, model name, gemini_enabled true/false, groq_enabled true/false, session_memory_messages >= 16.
+
+Patient Registration + Login
+TC-02
+- Role: Patient.
+- Login with new email + phone not present in DB.
+- Confirm prompt to create patient profile.
+- Expect successful login and dashboard.
+
+Patient First Onboarding
+TC-03
+- New patient with no previous reports.
+- Expect onboarding upload prompt appears.
+
+Upload Report (Image/PDF/Camera)
+TC-04
+- Go to Upload Records.
+- Upload image or PDF file.
+- Choose SHARE or HIDE privacy option.
+- Expect upload success toast and report appears in patient reports.
+
+TC-05 (Camera)
+- Use mobile browser.
+- Open upload picker and capture from camera.
+- Expect captured image upload works.
+
+Critical Privacy (No Panic to Patient)
+TC-06
+- Upload a report likely to produce critical anomaly (for example diabetes evidence with no diabetic meds).
+- Expect patient summary is safe/non-panic wording.
+- Expect detailed critical data is NOT shown in patient report list.
+- Expect response routed_to_admin=true for critical.
+
+Admin Critical Queue
+TC-07
+- Login as Admin role.
+- Open Critical Queue.
+- Expect critical report present with admin summary, risk level, suggested ESI, and actions.
+
+Admin Release to Doctor
+TC-08
+- In admin critical queue, click Release to Doctor.
+- Expect success toast and item removed/refreshed from pending queue.
+- Doctor should receive alert/urgent request feed entry.
+
+Doctor Urgent Feed (Gemini + Groq Segregation)
+TC-09
+- Login as Doctor role.
+- Check Priority Queue and AI Assist panels.
+- Expect urgent requests with risk level, suggested ESI, doctor actions.
+- Expect AI suggestions list populated from triage outputs.
+
+Doctor Alerts
+TC-10
+- Verify alert banner shows unresolved alerts.
+- Critical releases from admin should appear as doctor alerts.
+
+MCP + Multi-Model Orchestration
+TC-11
+- Upload patient report and inspect admin queue item.
+- Expect triage fields generated from MCP urgency + Gemini/Groq logic.
+- If GEMINI_API_KEY/GROQ_API_KEY missing, expect graceful fallback (no crash).
+
+Ambulance Dispatch (Patient Emergency)
+TC-12
+- Login as patient.
+- Click Emergency Help.
+- Allow location permission.
+- Expect nearest available ambulance is dispatched (or graceful unavailable message).
+
+Ambulance Dispatch (Auto from Critical Upload)
+TC-13
+- During patient upload, choose auto-dispatch confirmation and allow location.
+- For critical report with ambulance recommendation, expect dispatch result in response + toast.
+
+Ambulance Dispatch (Admin Desk Manual)
+TC-14
+- Login as admin.
+- Go to Ambulance Desk.
+- Fill patient_id + coordinates + severity and click Dispatch Ambulance.
+- Expect dispatch result with unit name, ETA, distance.
+
+Nearby Ambulances
+TC-15
+- In admin Ambulance Desk, enter coordinates and click Find Nearby Units.
+- Expect ranked nearby available units with distance.
+
+Consent Handling
+TC-16
+- Upload once with SHARE and once with HIDE.
+- Expect report_consent row created and source hospital details honored by consent.
+
+Patient Report Safety View
+TC-17
+- Visit patient Reports & Records.
+- Expect summaries shown from ai_summary_patient (safe wording for critical).
+
+Prescription Validation
+TC-18
+- In doctor portal: start consultation, upload prescription, run validation.
+- Expect validation severity + issues and critical alert creation when discrepancy exists.
+
+Chat Memory Capacity Increase
+TC-19
+- In patient dashboard, open Lumi chat and send multiple messages.
+- Expect session remains coherent for longer context due increased memory size.
+
+API Smoke Tests (Optional via browser/postman)
+TC-20
+- GET /api/admin/critical-queue
+- POST /api/admin/release-report/{report_id}
+- GET /api/doctor/urgent-requests/{doctor_id}
+- GET /api/ambulance/nearby?latitude=12.97&longitude=77.59
+- POST /api/ambulance/dispatch
+- Expect valid JSON responses and no 500 errors for valid payloads.
+
+Known Notes
+- Critical report details are intentionally gated from patient-facing responses to reduce panic.
+- Admin is the control point for releasing critical findings to doctors.
+- Gemini/Groq are optional and can use free API keys; OpenAI remains the main brain.

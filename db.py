@@ -20,6 +20,111 @@ def get_db():
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1] for row in rows}
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table_name: str, column_name: str, column_sql: str
+) -> None:
+    columns = _table_columns(conn, table_name)
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """Apply additive schema migrations for backward compatibility."""
+    _ensure_column(conn, "reports", "ai_summary_patient", "TEXT")
+    _ensure_column(conn, "reports", "ai_summary_admin", "TEXT")
+    _ensure_column(
+        conn,
+        "reports",
+        "risk_level",
+        "TEXT DEFAULT 'routine' CHECK(risk_level IN ('routine','urgent','critical'))",
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_escalations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL UNIQUE,
+            patient_id INTEGER NOT NULL,
+            doctor_id INTEGER,
+            risk_level TEXT DEFAULT 'urgent' CHECK(risk_level IN ('routine','urgent','critical')),
+            admin_summary TEXT,
+            patient_safe_summary TEXT,
+            triage_json TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending_admin' CHECK(status IN ('pending_admin','released_to_doctor','closed')),
+            reviewed_by_admin_id INTEGER,
+            released_to_doctor_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES reports(id),
+            FOREIGN KEY (patient_id) REFERENCES patients(id),
+            FOREIGN KEY (doctor_id) REFERENCES users(id),
+            FOREIGN KEY (reviewed_by_admin_id) REFERENCES users(id)
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ambulance_dispatches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ambulance_id INTEGER NOT NULL,
+            patient_id INTEGER NOT NULL,
+            report_id INTEGER,
+            requested_by_role TEXT,
+            requested_by_id INTEGER,
+            request_lat REAL NOT NULL,
+            request_lng REAL NOT NULL,
+            distance_km REAL,
+            eta_minutes INTEGER,
+            severity TEXT DEFAULT 'urgent' CHECK(severity IN ('routine','urgent','critical')),
+            status TEXT DEFAULT 'dispatched' CHECK(status IN ('dispatched','arrived','cancelled','completed')),
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (ambulance_id) REFERENCES ambulances(id),
+            FOREIGN KEY (patient_id) REFERENCES patients(id),
+            FOREIGN KEY (report_id) REFERENCES reports(id)
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS emergency_workflows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id INTEGER NOT NULL,
+            doctor_id INTEGER,
+            source_report_id INTEGER,
+            source_dispatch_id INTEGER,
+            risk_level TEXT DEFAULT 'critical' CHECK(risk_level IN ('urgent','critical')),
+            eta_minutes INTEGER DEFAULT 5,
+            ai_plan_json TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending_admin_accept' CHECK(status IN ('pending_admin_accept','accepted','closed')),
+            accepted_by_admin_id INTEGER,
+            accepted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (patient_id) REFERENCES patients(id),
+            FOREIGN KEY (doctor_id) REFERENCES users(id),
+            FOREIGN KEY (source_report_id) REFERENCES reports(id),
+            FOREIGN KEY (accepted_by_admin_id) REFERENCES users(id)
+        )
+    """
+    )
+
+    # Backfill patient-safe/admin-safe summaries for existing rows.
+    conn.execute(
+        """
+        UPDATE reports
+        SET ai_summary_patient = COALESCE(ai_summary_patient, ai_summary),
+            ai_summary_admin = COALESCE(ai_summary_admin, ai_summary),
+            risk_level = COALESCE(risk_level, 'routine')
+        """
+    )
+
+
 def init_db():
     """Create all tables and seed demo data."""
     conn = get_db()
@@ -74,6 +179,9 @@ def init_db():
             ocr_text TEXT,
             anomalies_json TEXT DEFAULT '[]',
             ai_summary TEXT,
+            ai_summary_patient TEXT,
+            ai_summary_admin TEXT,
+            risk_level TEXT DEFAULT 'routine' CHECK(risk_level IN ('routine','urgent','critical')),
             source_hospital TEXT,
             is_old_report INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -193,6 +301,30 @@ def init_db():
     """
     )
 
+    # ── Emergency Workflow Orchestration ──
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS emergency_workflows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id INTEGER NOT NULL,
+            doctor_id INTEGER,
+            source_report_id INTEGER,
+            source_dispatch_id INTEGER,
+            risk_level TEXT DEFAULT 'critical' CHECK(risk_level IN ('urgent','critical')),
+            eta_minutes INTEGER DEFAULT 5,
+            ai_plan_json TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending_admin_accept' CHECK(status IN ('pending_admin_accept','accepted','closed')),
+            accepted_by_admin_id INTEGER,
+            accepted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (patient_id) REFERENCES patients(id),
+            FOREIGN KEY (doctor_id) REFERENCES users(id),
+            FOREIGN KEY (source_report_id) REFERENCES reports(id),
+            FOREIGN KEY (accepted_by_admin_id) REFERENCES users(id)
+        )
+    """
+    )
+
     # ── Visit Transcripts (Voice-to-Text Conversations) ──
     cur.execute(
         """
@@ -247,6 +379,9 @@ def init_db():
         )
     """
     )
+
+    # Additive migrations for environments with older DB files.
+    _apply_migrations(conn)
 
     conn.commit()
 
@@ -447,12 +582,36 @@ def _seed_demo_data(conn):
     ]
 
     for r in reports:
+        risk_level = "routine"
+        anomalies_blob = r[5] or "[]"
+        if '"severity": "critical"' in anomalies_blob:
+            risk_level = "critical"
+        elif '"severity": "warning"' in anomalies_blob:
+            risk_level = "urgent"
+
         cur.execute(
             """
-            INSERT INTO reports (patient_id, uploaded_by, file_path, file_type, ocr_text, anomalies_json, ai_summary, source_hospital, is_old_report)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO reports (
+                patient_id, uploaded_by, file_path, file_type, ocr_text,
+                anomalies_json, ai_summary, ai_summary_patient, ai_summary_admin,
+                risk_level, source_hospital, is_old_report
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            r,
+            (
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                r[6],
+                r[6],
+                risk_level,
+                r[7],
+                r[8],
+            ),
         )
 
     # ── Report Consent ──
@@ -523,8 +682,38 @@ def _seed_demo_data(conn):
             a,
         )
 
+    # Seed one escalation for hackathon demo admin workflow.
+    cur.execute(
+        """
+        INSERT INTO report_escalations (
+            report_id, patient_id, doctor_id, risk_level,
+            admin_summary, patient_safe_summary, triage_json, status
+        )
+        VALUES (?, ?, ?, 'critical', ?, ?, ?, 'pending_admin')
+    """,
+        (
+            1,
+            1,
+            3,
+            "Critical prescription mismatch detected. Immediate doctor review recommended.",
+            "Your report has been received and is under urgent care-team review.",
+            json.dumps(
+                {
+                    "suggested_esi": 2,
+                    "doctor_actions": [
+                        "Review diabetic treatment plan immediately",
+                        "Arrange urgent follow-up consultation",
+                    ],
+                    "ambulance_recommended": False,
+                }
+            ),
+        ),
+    )
+
     # ── Ambulances ──
+    # Demo ambulance fleet positioned around Bangalore with realistic crew info
     ambulances = [
+        # Available units (ready for dispatch)
         (
             "AMB-01",
             "basic",
@@ -551,6 +740,44 @@ def _seed_demo_data(conn):
             77.6046,
             None,
             "Driver: Anil R, Paramedic: Deepa K, Cardiologist on-call",
+        ),
+        # Additional units for realistic fleet
+        (
+            "AMB-04",
+            "advanced",
+            "available",
+            12.9550,
+            77.6050,
+            None,
+            "Driver: Vikram S, Paramedic: Ananya C, EMT: Priya R",
+        ),
+        (
+            "AMB-05",
+            "basic",
+            "available",
+            12.9850,
+            77.5850,
+            None,
+            "Driver: Mohan V, Paramedic: Sita M",
+        ),
+        (
+            "AMB-06",
+            "cardiac",
+            "available",
+            12.9625,
+            77.6150,
+            None,
+            "Driver: Ravi K, Paramedic: Divya S, Cardiologist on-call",
+        ),
+        # One unit on maintenance (to show status variety)
+        (
+            "AMB-07",
+            "advanced",
+            "maintenance",
+            12.9900,
+            77.6100,
+            None,
+            "Driver: Ashok M, Paramedic: Neha P (In routine maintenance - back in 2 hrs)",
         ),
     ]
     for a in ambulances:
