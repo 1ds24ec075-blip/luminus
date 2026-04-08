@@ -42,6 +42,8 @@
     },
   };
 
+  const LUMI_API_URL = 'http://127.0.0.1:8000/api/chat';
+
   // -------- DOM References --------
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
@@ -382,6 +384,172 @@
         btn.style.cursor = 'default';
       });
     });
+
+    if (role === 'patient') {
+      const lumiChatBtn = page.querySelector('.lumi-chat-btn');
+      if (lumiChatBtn) {
+        lumiChatBtn.addEventListener('click', () => {
+          openLumiAssistant(page, username, record);
+        });
+      }
+    }
+  }
+
+  function getPatientContext(page, username, record) {
+    const appointments = Array.from(page.querySelectorAll('.appointment-item')).map((item) => {
+      const month = item.querySelector('.appt-month')?.textContent?.trim() || '';
+      const day = item.querySelector('.appt-day')?.textContent?.trim() || '';
+      const doctor = item.querySelector('.appt-doctor')?.textContent?.trim() || '';
+      const type = item.querySelector('.appt-type')?.textContent?.trim() || '';
+      return { date: `${month} ${day}`.trim(), doctor, type };
+    });
+
+    const medications = Array.from(page.querySelectorAll('.medication-item')).map((item) => {
+      const name = item.querySelector('.med-name')?.textContent?.trim() || '';
+      const schedule = item.querySelector('.med-schedule')?.textContent?.trim() || '';
+      const taken = item.querySelector('.med-check')?.classList.contains('taken') || false;
+      return { name, schedule, taken };
+    });
+
+    return {
+      username,
+      name: record.name,
+      role: record.role,
+      reports: [
+        {
+          title: 'Lipid Panel',
+          date: '2026-03-22',
+          summary: 'LDL slightly elevated. HDL in normal range.',
+        },
+        {
+          title: 'CBC',
+          date: '2026-03-22',
+          summary: 'All key markers within normal limits.',
+        },
+        {
+          title: 'Blood Pressure Trend',
+          date: '2026-04-06',
+          summary: 'Average reading 120/80 over the past week.',
+        },
+      ],
+      upcoming_appointments: appointments,
+      medications,
+      vitals: {
+        heart_rate: '78 bpm',
+        blood_pressure: '120/80',
+        sleep: '7h 20m',
+      },
+    };
+  }
+
+  function addLumiMessage(container, sender, text) {
+    const bubble = document.createElement('div');
+    bubble.className = `lumi-message ${sender}`;
+    bubble.textContent = text;
+    container.appendChild(bubble);
+    container.scrollTop = container.scrollHeight;
+    return bubble;
+  }
+
+  async function sendLumiMessage(page, username, record, chatPanel) {
+    const input = chatPanel.querySelector('.lumi-chat-input');
+    const messages = chatPanel.querySelector('.lumi-chat-messages');
+    const sendBtn = chatPanel.querySelector('.lumi-send-btn');
+    const userMessage = input.value.trim();
+
+    if (!userMessage) return;
+
+    addLumiMessage(messages, 'user', userMessage);
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const thinkingBubble = addLumiMessage(messages, 'assistant', 'Let me check your records...');
+
+    try {
+      const response = await fetch(LUMI_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: `${username}-${record.role}`,
+          message: userMessage,
+          patient: getPatientContext(page, username, record),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Unable to reach Lumi backend');
+      }
+
+      const payload = await response.json();
+      thinkingBubble.remove();
+      addLumiMessage(messages, 'assistant', payload.reply || 'I could not generate a response right now.');
+    } catch (err) {
+      thinkingBubble.remove();
+      addLumiMessage(
+        messages,
+        'assistant',
+        'I am unable to connect right now. Start the Python server and check that OPENAI_API_KEY is set.'
+      );
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  function ensureLumiAssistantPanel(page, username, record) {
+    let panel = page.querySelector('#lumiChatPanel');
+    if (panel) return panel;
+
+    panel = document.createElement('section');
+    panel.id = 'lumiChatPanel';
+    panel.className = 'lumi-chat-panel';
+    panel.innerHTML = `
+      <div class="lumi-chat-header">
+        <div>
+          <h3>Lumi Assistant</h3>
+          <p>Personalized AI support for ${record.name}</p>
+        </div>
+        <button class="lumi-close-btn" aria-label="Close chat">×</button>
+      </div>
+      <div class="lumi-chat-messages"></div>
+      <div class="lumi-chat-input-row">
+        <input class="lumi-chat-input" type="text" placeholder="Ask about reports, medication, or appointments" />
+        <button class="lumi-send-btn">Send</button>
+      </div>
+    `;
+
+    page.appendChild(panel);
+
+    const messages = panel.querySelector('.lumi-chat-messages');
+    addLumiMessage(
+      messages,
+      'assistant',
+      `Hi ${record.name.split(' ')[0]}, I can help with your reports, upcoming appointments, medications, and health questions.`
+    );
+
+    panel.querySelector('.lumi-close-btn').addEventListener('click', () => {
+      panel.classList.remove('open');
+    });
+
+    panel.querySelector('.lumi-send-btn').addEventListener('click', () => {
+      sendLumiMessage(page, username, record, panel);
+    });
+
+    panel.querySelector('.lumi-chat-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendLumiMessage(page, username, record, panel);
+      }
+    });
+
+    return panel;
+  }
+
+  function openLumiAssistant(page, username, record) {
+    const panel = ensureLumiAssistantPanel(page, username, record);
+    panel.classList.add('open');
+    const input = panel.querySelector('.lumi-chat-input');
+    if (input) input.focus();
   }
 
   // -------- Patient Dashboard Content --------
