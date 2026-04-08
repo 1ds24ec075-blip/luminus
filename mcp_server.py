@@ -9,7 +9,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import re
+import mathfrom ai_router import SensitivityAwareRouter
 
+router = SensitivityAwareRouter()
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "luminus.db"
 
@@ -26,36 +28,31 @@ def get_db():
 # Tool 1: Analyze Report Urgency (Critical Keywords & Anomaly Score)
 # ─────────────────────────────────────────────────────────────────
 
-CRITICAL_KEYWORDS = [
-    "myocardial infarction",
-    "mi",
-    "stroke",
-    "hemorrhage",
-    "sepsis",
-    "shock",
-    "cardiac arrest",
-    "acute coronary",
-    "pulmonary embolism",
-    "anaphylaxis",
-    "cardiopulmonary",
-    "respiratory distress",
-    "hypotension",
-    "arrhythmia",
-    "life-threatening",
-    "emergency",
-    "critical",
-    "severe",
-    "unstable",
-]
+import hashlib
+import logging
 
+logger = logging.getLogger(__name__)
+
+# Very basic local cache to store LLM responses based on inputs
+_TRIAGE_CACHE = {}
+_PRESCRIPTION_CACHE = {}
+
+def _log_mcp_event(task: str, model_used: str, input_data: Any, output_data: Any):
+    print(f"\n[MCP LOG] Task: {task} | Model Used: {model_used}")
+    logger.info(f"Event: {task}, Model: {model_used}, InputHash: {hashlib.md5(str(input_data).encode()).hexdigest()}")
+
+def _validate_urgency(urgency: str) -> str:
+    urg_lower = urgency.lower()
+    if urg_lower in ["critical", "high"]:
+        return "critical"
+    if urg_lower in ["urgent", "medium"]:
+        return "urgent"
+    return "routine"
 
 def analyze_report_urgency(report_id: int) -> Dict[str, Any]:
     """
-    Analyze a patient report for urgency level based on:
-    - Critical keywords in OCR text or AI summary
-    - Anomaly severity scores
-    - Rule-based logic for medical conditions
-    Returns: {urgency_level, score, key_findings}
+    Analyze a patient report for urgency level using AI Router.
+    Returns: {urgency_level, score, reasoning, requires_review, confidence}
     """
     conn = get_db()
     cur = conn.cursor()
@@ -67,55 +64,79 @@ def analyze_report_urgency(report_id: int) -> Dict[str, Any]:
     """,
         (report_id,),
     ).fetchone()
+    conn.close()
 
     if not report:
         return {"error": "Report not found", "urgency_level": "unknown"}
 
-    ocr_lower = (report["ocr_text"] or "").lower()
-    summary_lower = (report["ai_summary"] or "").lower()
-    anomalies = json.loads(report["anomalies_json"] or "[]")
+    ocr_text = report["ocr_text"] or ""
+    summary = report["ai_summary"] or ""
+    anomalies = report["anomalies_json"] or "[]"
+    
+    input_str = f"{ocr_text[:5000]}_{summary}_{anomalies}"
+    cache_key = hashlib.md5(input_str.encode()).hexdigest()
+    
+    if cache_key in _TRIAGE_CACHE:
+        print("[MCP] Serving triage analysis from cache.")
+        return _TRIAGE_CACHE[cache_key]
 
-    # Score based on anomalies
-    max_severity_score = 0
-    critical_anomalies = []
+    prompt = (
+        "You are an expert clinical triage evaluator. Analyze the following medical report details "
+        "and determine the urgency level. \n"
+        "Return strict JSON with exactly these keys:\n"
+        "- urgency: string (must be exactly 'critical', 'high', 'medium', or 'low')\n"
+        "- reasoning: string (1-2 sentences explaining why)\n"
+        "- flags: array of strings (key critical anomalies found)\n"
+        "- confidence: number (0-100 representing how confident you are in this triage)\n\n"
+        f"Report Summary: {summary}\n"
+        f"Report Anomalies: {anomalies}\n"
+        f"Report OCR Text: {ocr_text[:3000]}"
+    )
+    
+    payload = {"prompt": prompt, "json_mode": True}
+    
+    try:
+        # Route logic targeting OpenAI via our SensitivityAwareRouter ('LOW' sens, 'HIGH' comp)
+        res = router.route_request("BATCH", "LOW", "HIGH", payload)
+        model_used = res.get("source", "Unknown/Fallback")
+        parsed = json.loads(res.get("content", "{}"))
+        
+        # 1. Validation Layer
+        urgency = _validate_urgency(parsed.get("urgency", "low"))
+        confidence = parsed.get("confidence", 50)
+        
+        # 2. Human Override Layer
+        requires_review = urgency in ["critical", "urgent"]
 
-    for anom in anomalies:
-        severity = anom.get("severity", "info")
-        if severity == "critical":
-            max_severity_score = max(max_severity_score, 8)
-            critical_anomalies.append(anom)
-        elif severity == "warning":
-            max_severity_score = max(max_severity_score, 5)
-
-    # Score based on critical keywords
-    keyword_score = 0
-    found_keywords = []
-    for keyword in CRITICAL_KEYWORDS:
-        if keyword in ocr_lower or keyword in summary_lower:
-            keyword_score = 9
-            found_keywords.append(keyword)
-            break
-
-    # Combine scores
-    final_score = max(max_severity_score, keyword_score)
-
-    # Determine urgency level
-    if final_score >= 8:
-        urgency = "critical"
-    elif final_score >= 5:
-        urgency = "urgent"
-    else:
-        urgency = "routine"
-
-    conn.close()
-
-    return {
-        "report_id": report_id,
-        "urgency_level": urgency,
-        "score": final_score,
-        "critical_anomalies": critical_anomalies,
-        "found_keywords": found_keywords,
-    }
+        result = {
+            "report_id": report_id,
+            "urgency_level": urgency,
+            "reasoning": parsed.get("reasoning", "No summary provided by AI."),
+            "flags": parsed.get("flags", []),
+            "confidence": confidence,
+            "requires_review": requires_review,
+            "model_used": model_used
+        }
+        
+        # 3. Observability
+        _log_mcp_event("analyze_report_urgency", model_used, input_str, result)
+        
+        # 4. Caching
+        _TRIAGE_CACHE[cache_key] = result
+        return result
+        
+    except Exception as e:
+        logger.error(f"[MCP Error] {e}")
+        # Safe fallback
+        return {
+            "report_id": report_id,
+            "urgency_level": "urgent",
+            "reasoning": "Fallback due to AI processing failure.",
+            "flags": ["AI Timeout/Error"],
+            "confidence": 0,
+            "requires_review": True,
+            "model_used": "System/Error"
+        }
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -149,7 +170,9 @@ def get_patient_history_for_doctor(patient_id: int) -> Dict[str, Any]:
     # Get all reports (with anomalies but WITHOUT hospital/doctor names)
     reports = cur.execute(
         """
-        SELECT id, file_type, ocr_text, anomalies_json, ai_summary, created_at
+        SELECT id, file_type, ocr_text, anomalies_json,
+               COALESCE(ai_summary_admin, ai_summary) AS ai_summary,
+               created_at
         FROM reports WHERE patient_id = ?
         ORDER BY created_at DESC
     """,
@@ -527,6 +550,172 @@ def allocate_time_slot(
 
 
 # ─────────────────────────────────────────────────────────────────
+# Tool 7: Ambulance Geolocation and Dispatch
+# ─────────────────────────────────────────────────────────────────
+
+
+def _haversine_distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Compute great-circle distance between 2 coordinates in kilometers."""
+    r = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def list_nearby_ambulances(
+    latitude: float, longitude: float, limit: int = 5
+) -> Dict[str, Any]:
+    """List nearest available ambulances by distance from patient location."""
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        """
+        SELECT id, unit_name, vehicle_type, status, current_lat, current_lng, crew_info
+        FROM ambulances
+        WHERE status = 'available'
+        """
+    ).fetchall()
+    conn.close()
+
+    ambulances = []
+    for row in rows:
+        distance_km = _haversine_distance_km(
+            latitude,
+            longitude,
+            float(row["current_lat"]),
+            float(row["current_lng"]),
+        )
+        ambulances.append(
+            {
+                "id": row["id"],
+                "unit_name": row["unit_name"],
+                "vehicle_type": row["vehicle_type"],
+                "distance_km": round(distance_km, 2),
+                "crew_info": row["crew_info"],
+            }
+        )
+
+    ambulances.sort(key=lambda item: item["distance_km"])
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "available_count": len(ambulances),
+        "ambulances": ambulances[: max(1, int(limit))],
+    }
+
+
+def create_ambulance_dispatch(
+    patient_id: int,
+    latitude: float,
+    longitude: float,
+    severity: str = "urgent",
+    report_id: int | None = None,
+    requested_by_role: str = "system",
+    requested_by_id: int | None = None,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Dispatch nearest available ambulance and persist dispatch record."""
+    severity = (severity or "urgent").lower().strip()
+    if severity not in {"routine", "urgent", "critical"}:
+        severity = "urgent"
+
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        """
+        SELECT id, unit_name, vehicle_type, current_lat, current_lng, crew_info
+        FROM ambulances
+        WHERE status = 'available'
+        """
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        return {
+            "status": "unavailable",
+            "message": "No available ambulance units at the moment.",
+        }
+
+    ranked = []
+    for row in rows:
+        distance_km = _haversine_distance_km(
+            latitude,
+            longitude,
+            float(row["current_lat"]),
+            float(row["current_lng"]),
+        )
+        ranked.append((distance_km, row))
+
+    ranked.sort(key=lambda item: item[0])
+    nearest_distance_km, nearest = ranked[0]
+
+    # Rough urban ETA model for hackathon demo.
+    speed_kmph = 28.0 if severity == "critical" else 24.0
+    eta_minutes = max(4, int(round((nearest_distance_km / speed_kmph) * 60 + 4)))
+
+    cur.execute(
+        """
+        UPDATE ambulances
+        SET status = 'dispatched',
+            assigned_patient_id = ?,
+            current_lat = ?,
+            current_lng = ?
+        WHERE id = ?
+        """,
+        (patient_id, latitude, longitude, nearest["id"]),
+    )
+
+    cur.execute(
+        """
+        INSERT INTO ambulance_dispatches (
+            ambulance_id, patient_id, report_id, requested_by_role,
+            requested_by_id, request_lat, request_lng,
+            distance_km, eta_minutes, severity, status, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dispatched', ?)
+        """,
+        (
+            nearest["id"],
+            patient_id,
+            report_id,
+            requested_by_role,
+            requested_by_id,
+            latitude,
+            longitude,
+            round(nearest_distance_km, 2),
+            eta_minutes,
+            severity,
+            notes,
+        ),
+    )
+    dispatch_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "dispatched",
+        "dispatch_id": dispatch_id,
+        "ambulance": {
+            "id": nearest["id"],
+            "unit_name": nearest["unit_name"],
+            "vehicle_type": nearest["vehicle_type"],
+            "crew_info": nearest["crew_info"],
+        },
+        "distance_km": round(nearest_distance_km, 2),
+        "eta_minutes": eta_minutes,
+        "severity": severity,
+        "patient_id": patient_id,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
 # MCP Tool Definitions (for Claude via MCP bridge)
 # ─────────────────────────────────────────────────────────────────
 
@@ -574,6 +763,27 @@ AVAILABLE_TOOLS = {
             "esi_priority": "1-5 (1=resuscitation, 5=routine)",
         },
     },
+    "list_nearby_ambulances": {
+        "description": "List nearest available ambulances using latitude and longitude.",
+        "parameters": {
+            "latitude": "Patient latitude",
+            "longitude": "Patient longitude",
+            "limit": "Maximum rows to return",
+        },
+    },
+    "create_ambulance_dispatch": {
+        "description": "Dispatch nearest ambulance and create a dispatch record.",
+        "parameters": {
+            "patient_id": "ID of the patient",
+            "latitude": "Patient latitude",
+            "longitude": "Patient longitude",
+            "severity": "routine|urgent|critical",
+            "report_id": "Related report id (optional)",
+            "requested_by_role": "patient|doctor|admin|system",
+            "requested_by_id": "Caller id (optional)",
+            "notes": "Dispatch note",
+        },
+    },
 }
 
 
@@ -615,6 +825,25 @@ def handle_tool_call(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, An
             tool_input.get("patient_id"),
             tool_input.get("doctor_id"),
             tool_input.get("esi_priority", 3),
+        )
+
+    elif tool_name == "list_nearby_ambulances":
+        return list_nearby_ambulances(
+            float(tool_input.get("latitude")),
+            float(tool_input.get("longitude")),
+            int(tool_input.get("limit", 5)),
+        )
+
+    elif tool_name == "create_ambulance_dispatch":
+        return create_ambulance_dispatch(
+            int(tool_input.get("patient_id")),
+            float(tool_input.get("latitude")),
+            float(tool_input.get("longitude")),
+            str(tool_input.get("severity", "urgent")),
+            tool_input.get("report_id"),
+            str(tool_input.get("requested_by_role", "system")),
+            tool_input.get("requested_by_id"),
+            str(tool_input.get("notes", "")),
         )
 
     else:

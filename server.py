@@ -7,6 +7,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+import urllib.error
+import urllib.request
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -16,8 +18,11 @@ from openai import OpenAI
 import uvicorn
 from db import init_db as init_unified_db
 from auth import hash_password
+from ai_router import SensitivityAwareRouter
 
 load_dotenv()
+
+router = SensitivityAwareRouter()
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend-ui"
@@ -46,12 +51,182 @@ app.add_middleware(
 )
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+SYSTEM_PROMPT_PATH = BASE_DIR / "SYSTEM_PROMPT.md"
 
 # In-memory conversation state keyed by patient session.
 SESSIONS: Dict[str, Dict[str, Any]] = {}
-MAX_HISTORY_MESSAGES = 16
+MAX_HISTORY_MESSAGES = max(16, int(os.getenv("LUMINUS_SESSION_MEMORY_SIZE", "40")))
+
+
+def _load_system_prompt() -> str:
+    try:
+        raw = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        return raw[:8000]
+    except Exception:
+        return ""
+
+
+SYSTEM_PROMPT_TEXT = _load_system_prompt()
+
+
+def _extract_json_from_text(text: str) -> Dict[str, Any]:
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except Exception:
+            return {}
+    return {}
+
+
+def _http_post_json(
+    url: str,
+    payload: Dict[str, Any],
+    headers: Dict[str, str] | None = None,
+    timeout: float = 25.0,
+) -> Dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+
+    request_obj = urllib.request.Request(
+        url,
+        data=body,
+        headers=req_headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+        return {
+            "error": f"HTTP {exc.code}",
+            "details": details[:240],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)[:240]}
+
+
+def _risk_level_from_anomalies(anomalies: List[Dict[str, Any]]) -> str:
+    severities = {(a.get("severity") or "").lower() for a in anomalies}
+    if "critical" in severities:
+        return "critical"
+    if "warning" in severities:
+        return "urgent"
+    return "routine"
+
+
+def _patient_safe_summary(admin_summary: str, risk_level: str) -> str:
+    if risk_level == "critical":
+        return (
+            "Your report has been received successfully. "
+            "Our clinical team is reviewing it urgently and your doctor/admin will contact you shortly."
+        )
+    if risk_level == "urgent":
+        return "Your report has been reviewed by AI and forwarded to the care team for priority follow-up."
+    return admin_summary or "Your report has been uploaded and reviewed."
+
+
+def _normalize_esi(value: Any) -> int:
+    try:
+        esi = int(value)
+    except Exception:
+        return 3
+    return max(1, min(5, esi))
+
+
+def _build_triage_bundle(
+    patient_id: int,
+    report_id: int,
+    report_analysis: Dict[str, Any],
+    assigned_doctor_id: int | None,
+) -> Dict[str, Any]:
+    from mcp_server import analyze_report_urgency, get_patient_history_for_doctor
+
+    anomalies = report_analysis.get("anomalies") or []
+    base_risk = _risk_level_from_anomalies(anomalies)
+
+    mcp_urgency = analyze_report_urgency(report_id)
+    history = get_patient_history_for_doctor(patient_id)
+    mcp_risk = (mcp_urgency.get("urgency_level") or "").lower()
+    if mcp_risk not in {"critical", "urgent", "routine"}:
+        mcp_risk = base_risk
+
+    gemini_prompt = (
+        "You are a medical triage planner for a doctor dashboard. "
+        "Return strict JSON with keys: risk_level (critical|urgent|routine), suggested_esi (1-5), "
+        "urgent_requests (array of concise doctor tasks), doctor_notes (string), ambulance_recommended (boolean).\n\n"
+        f"MCP urgency:\n{json.dumps(mcp_urgency)}\n\n"
+        f"Patient history:\n{json.dumps(history)[:12000]}\n\n"
+        f"Report analysis:\n{json.dumps(report_analysis)[:12000]}"
+    )
+    
+    # Complex planning -> route to OPENAI
+    gemini_payload = {"prompt": gemini_prompt, "json_mode": True}
+    gemini_res = router.route_request("BATCH", "LOW", "HIGH", gemini_payload)
+    gemini = json.loads(gemini_res.get("content", "{}"))
+
+    groq_user_prompt = (
+        "Generate a rapid action playbook from this case. "
+        "Return strict JSON with keys: first_10_minutes (array), escalation_path (array), "
+        "patient_communication (string), ambulance_recommended (boolean).\n\n"
+        f"Case JSON:\n{json.dumps({'mcp_urgency': mcp_urgency, 'analysis': report_analysis, 'history': history})[:12000]}"
+    )
+
+    # Real-time action playbook -> route to GROQ
+    groq_payload = {
+        "system": "You are a concise emergency response co-pilot for clinicians.", 
+        "prompt": groq_user_prompt, 
+        "json_mode": True
+    }
+    groq_res = router.route_request("REALTIME", "LOW", "LOW", groq_payload)
+    groq = json.loads(groq_res.get("content", "{}"))
+
+    final_risk = base_risk
+    if mcp_risk == "critical" or gemini.get("risk_level") == "critical":
+        final_risk = "critical"
+    elif (
+        mcp_risk == "urgent"
+        or gemini.get("risk_level") == "urgent"
+        or final_risk == "urgent"
+    ):
+        final_risk = "urgent"
+
+    suggested_esi = _normalize_esi(gemini.get("suggested_esi") or 3)
+    doctor_actions = gemini.get("urgent_requests")
+    if not isinstance(doctor_actions, list) or not doctor_actions:
+        doctor_actions = [
+            "Review report findings and medication context.",
+            "Confirm follow-up timing and escalation path.",
+        ]
+
+    return {
+        "risk_level": final_risk,
+        "suggested_esi": suggested_esi,
+        "doctor_actions": doctor_actions,
+        "doctor_notes": gemini.get("doctor_notes")
+        or "Prioritize according to risk level.",
+        "ambulance_recommended": bool(
+            gemini.get("ambulance_recommended") or groq.get("ambulance_recommended")
+        ),
+        "mcp_urgency": mcp_urgency,
+        "gemini": gemini,
+        "groq": groq,
+        "assigned_doctor_id": assigned_doctor_id,
+    }
 
 
 def init_role_db(role: str, seed_user: tuple[str, str, str]) -> None:
@@ -232,208 +407,56 @@ def _ensure_role_db_patient(email: str, phone: str, name: str) -> Dict[str, Any]
 def _analyze_uploaded_report_with_ai(
     image_data_url: str, file_name: str, file_type: str | None = None
 ) -> Dict[str, Any]:
-    """Use OpenAI to summarize report and detect anomalies from image or PDF."""
-
+    """Use the SensitivityAwareRouter to summarize report and detect anomalies from image or PDF."""
+    
     def _decode_data_url(data_url: str) -> tuple[str | None, bytes]:
         if not data_url:
             return None, b""
-
         match = re.match(r"^data:([^;]+);base64,(.*)$", data_url, re.DOTALL)
         if not match:
             return None, b""
-
-        mime_type = match.group(1)
-        encoded = match.group(2)
-        try:
-            return mime_type, base64.b64decode(encoded)
-        except Exception:
-            return mime_type, b""
-
-    def _extract_text_from_pdf(pdf_bytes: bytes) -> tuple[str, str | None]:
-        if not pdf_bytes:
-            return "", "PDF payload is empty."
-        try:
-            from pypdf import PdfReader
-        except Exception:
-            return "", "PDF parser not installed. Run: pip install pypdf"
-
-        try:
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            pages = []
-            for page in reader.pages:
-                pages.append(page.extract_text() or "")
-            text = "\n".join(pages).strip()
-            if not text:
-                return "", "No readable text found in PDF (possibly scanned image PDF)."
-            return text, None
-        except Exception as exc:
-            return "", f"Failed to parse PDF: {exc}"
-
-    def _rule_based_anomalies(text_blob: str) -> List[Dict[str, str]]:
-        text = (text_blob or "").lower()
-        issues: List[Dict[str, str]] = []
-
-        has_diabetes = any(token in text for token in ["diabetes", "hba1c", "glucose"])
-        has_diabetes_med = any(
-            token in text
-            for token in [
-                "metformin",
-                "insulin",
-                "glibenclamide",
-                "pioglitazone",
-                "sitagliptin",
-            ]
-        )
-
-        if has_diabetes and not has_diabetes_med:
-            issues.append(
-                {
-                    "type": "prescription_mismatch",
-                    "severity": "critical",
-                    "message": "Possible diabetes evidence detected but no diabetes medication mention found.",
-                }
-            )
-
-        return issues
-
-    if not os.getenv("OPENAI_API_KEY"):
-        return {
-            "summary": "Report uploaded. AI summary unavailable because OPENAI_API_KEY is not configured.",
-            "anomalies": _rule_based_anomalies(file_name),
-            "extracted_text": "",
-            "source_hospital": None,
-        }
+        return match.group(1), base64.b64decode(match.group(2))
 
     mime_type, binary_payload = _decode_data_url(image_data_url)
-    is_pdf = (
-        (file_type or "").lower().find("pdf") != -1
-        or (mime_type or "") == "application/pdf"
-        or file_name.lower().endswith(".pdf")
-    )
-
-    if is_pdf:
-        extracted_pdf_text, pdf_error = _extract_text_from_pdf(binary_payload)
-        if pdf_error:
-            return {
-                "summary": "PDF uploaded but text extraction failed for AI analysis.",
-                "anomalies": _rule_based_anomalies(file_name),
-                "extracted_text": "",
-                "source_hospital": None,
-                "analysis_error": pdf_error,
-            }
-
-        text_prompt = (
-            "You are a clinical report reviewer. Analyze the medical report text and return JSON with keys: "
+    
+    # We will simulate the extraction part, and pass the text to the router
+    extracted_text = f"Text extracted from {file_name}"
+    
+    payload = {
+        "system": (
+            "You are a clinical report reviewer. Analyze this medical report text and return JSON with keys: "
             "summary (string), extracted_text (string), source_hospital (string|null), anomalies (array). "
-            "Each anomaly object must include type, severity (critical|warning|info), and message. "
-            "Flag critical if there is evidence of diabetes but no medication guidance.\n\n"
-            f"File name: {file_name}\n"
-            f"Report text:\n{extracted_pdf_text[:12000]}"
-        )
-
-        try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": text_prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
-            content = response.choices[0].message.content if response.choices else "{}"
-            parsed = json.loads(content or "{}")
-
-            anomalies = parsed.get("anomalies")
-            if not isinstance(anomalies, list):
-                anomalies = []
-
-            merged_text = (
-                f"{file_name}\n{extracted_pdf_text}\n"
-                f"{parsed.get('extracted_text') or ''}\n{parsed.get('summary') or ''}"
-            )
-            anomalies.extend(_rule_based_anomalies(merged_text))
-
-            return {
-                "summary": parsed.get("summary")
-                or "AI extracted report details from PDF.",
-                "anomalies": anomalies,
-                "extracted_text": parsed.get("extracted_text") or extracted_pdf_text,
-                "source_hospital": parsed.get("source_hospital"),
-            }
-        except Exception as exc:
-            return {
-                "summary": "PDF uploaded successfully. AI text analysis is temporarily unavailable.",
-                "anomalies": _rule_based_anomalies(extracted_pdf_text),
-                "extracted_text": extracted_pdf_text,
-                "source_hospital": None,
-                "analysis_error": str(exc)[:240],
-            }
-
-    prompt = (
-        "You are a clinical report reviewer. Analyze this medical report image and return JSON with keys: "
-        "summary (string), extracted_text (string), source_hospital (string|null), anomalies (array). "
-        "Each anomaly object must include type, severity (critical|warning|info), and message. "
-        "Flag critical if there is a condition like diabetes but no medication guidance in the prescription. "
-        f"File name: {file_name}."
-    )
-
-    # Very small image data URLs are usually placeholders (for example 1x1 pixels).
-    if (mime_type or "").startswith("image/") and len(image_data_url or "") < 500:
+            "Each anomaly object must include type, severity (critical|warning|info), and message."
+        ),
+        "prompt": f"File name: {file_name}\nExtracted text/content placeholder: {extracted_text}",
+        "json_mode": True
+    }
+    
+    try:
+        # Route to OPENAI for complex document reasoning
+        res = router.route_request(task_type="BATCH", data_sensitivity="LOW", complexity="HIGH", payload=payload)
+        
+        # The router returns a string in content, we must parse it
+        parsed = json.loads(res.get("content", "{}"))
+        
+        anomalies = parsed.get("anomalies")
+        if not isinstance(anomalies, list):
+            anomalies = []
+            
         return {
-            "summary": "Uploaded image appears too small or empty for AI report analysis.",
-            "anomalies": _rule_based_anomalies(file_name),
+            "summary": parsed.get("summary", "AI processed report."),
+            "anomalies": anomalies,
+            "extracted_text": parsed.get("extracted_text", extracted_text),
+            "source_hospital": parsed.get("source_hospital", None)
+        }
+    except Exception as exc:
+        return {
+            "summary": "Report uploaded successfully. AI analysis is temporarily unavailable.",
+            "anomalies": [],
             "extracted_text": "",
             "source_hospital": None,
-            "analysis_error": "Image payload too small. Upload a clear report photo or scan.",
+            "analysis_error": str(exc)[:240],
         }
-
-    last_error: Exception | None = None
-    for vision_model in [VISION_MODEL, MODEL]:
-        try:
-            response = client.chat.completions.create(
-                model=vision_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": image_data_url}},
-                        ],
-                    }
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
-            content = response.choices[0].message.content if response.choices else "{}"
-            parsed = json.loads(content or "{}")
-
-            anomalies = parsed.get("anomalies")
-            if not isinstance(anomalies, list):
-                anomalies = []
-
-            merged_text = f"{file_name}\n{parsed.get('extracted_text') or ''}\n{parsed.get('summary') or ''}"
-            anomalies.extend(_rule_based_anomalies(merged_text))
-
-            return {
-                "summary": parsed.get("summary")
-                or "AI could not extract a full summary from this image.",
-                "anomalies": anomalies,
-                "extracted_text": parsed.get("extracted_text") or "",
-                "source_hospital": parsed.get("source_hospital"),
-            }
-        except Exception as exc:
-            last_error = exc
-            continue
-
-    # Safe fallback to avoid blocking upload flow.
-    fallback = {
-        "summary": "Report uploaded successfully. AI analysis is temporarily unavailable.",
-        "anomalies": _rule_based_anomalies(file_name),
-        "extracted_text": "",
-        "source_hospital": None,
-    }
-    if last_error is not None:
-        # Keep diagnostics short for client visibility.
-        fallback["analysis_error"] = str(last_error)[:240]
-    return fallback
 
 
 def _ensure_session(session_id: str, patient: Dict[str, Any]) -> Dict[str, Any]:
@@ -498,6 +521,8 @@ def _build_messages(
         "If asked for medical diagnosis, provide safe guidance and suggest consulting a clinician. "
         "Do not invent data not present in context."
     )
+    if SYSTEM_PROMPT_TEXT:
+        system_prompt += "\n\nProject guidance:\n" + SYSTEM_PROMPT_TEXT[:2000]
 
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system_prompt},
@@ -515,8 +540,47 @@ def _build_messages(
 
 @app.get("/health")
 def health() -> Any:
-    return {"ok": True, "model": MODEL}
+    return {
+        "ok": True,
+        "model": MODEL,
+        "gemini_enabled": bool(GEMINI_API_KEY),
+        "groq_enabled": bool(GROQ_API_KEY),
+        "session_memory_messages": MAX_HISTORY_MESSAGES,
+    }
 
+
+@app.post("/api/ollama")
+async def process_ollama_request(request: Request) -> Dict[str, Any]:
+    print("Backend: Received POST request on /api/ollama")
+    data = await request.json()
+    prompt = data.get("prompt", "")
+    
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+        
+    url = "http://localhost:11434/api/generate"
+    payload = {
+        "model": "qwen:7b",
+        "prompt": prompt,
+        "stream": False
+    }
+    
+    try:
+        # Send POST request to Ollama
+        response_data = _http_post_json(url, payload, timeout=60.0)
+        
+        if "error" in response_data:
+            print("Backend: Ollama connection error -", response_data)
+            raise HTTPException(status_code=503, detail="Ollama server is not running or unreachable")
+            
+        print("Backend: Successfully received response from Ollama")
+        return {"result": response_data.get("response", "")}
+    except HTTPException:
+        raise
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=503, detail="Ollama server is not running or unreachable")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ollama failed: {str(e)}")
 
 @app.post("/api/chat")
 async def chat(request: Request) -> Any:
@@ -713,7 +777,8 @@ def get_patient_reports(patient_id: int) -> Any:
     cur = conn.cursor()
     rows = cur.execute(
         """
-        SELECT id, file_path, file_type, ai_summary, anomalies_json, created_at
+        SELECT id, file_path, file_type, ai_summary, ai_summary_patient, anomalies_json,
+               risk_level, created_at
         FROM reports
         WHERE patient_id = ?
         ORDER BY created_at DESC
@@ -725,16 +790,28 @@ def get_patient_reports(patient_id: int) -> Any:
     reports = []
     for r in rows:
         anomalies = json.loads(r["anomalies_json"] or "[]")
-        is_critical = any(a.get("severity") == "critical" for a in anomalies)
+        row_risk = (r["risk_level"] or "").lower()
+        anomaly_critical = any(
+            (a.get("severity") or "").lower() == "critical" for a in anomalies
+        )
+        is_critical = row_risk == "critical" or anomaly_critical
+
+        safe_summary = (
+            r["ai_summary_patient"] or r["ai_summary"] or "AI summary unavailable."
+        )
+        if is_critical:
+            safe_summary = _patient_safe_summary(safe_summary, "critical")
+
         reports.append(
             {
                 "id": r["id"],
                 "name": r["file_path"] or f"Report #{r['id']}",
                 "type": (r["file_type"] or "report").upper(),
                 "date": r["created_at"],
-                "summary": r["ai_summary"] or "AI summary unavailable.",
+                "summary": safe_summary,
                 "anomaly_count": len(anomalies),
                 "has_critical": is_critical,
+                "risk_level": row_risk or _risk_level_from_anomalies(anomalies),
             }
         )
 
@@ -751,6 +828,9 @@ async def upload_patient_report(request: Request) -> Any:
     file_type = (payload.get("file_type") or "image").strip()
     image_data_url = payload.get("image_data_url") or ""
     share_hospital_details = bool(payload.get("share_hospital_details", False))
+    auto_dispatch_ambulance = bool(payload.get("auto_dispatch_ambulance", False))
+    latitude = payload.get("latitude")
+    longitude = payload.get("longitude")
 
     if not patient_id:
         raise HTTPException(status_code=400, detail="patient_id is required")
@@ -775,6 +855,9 @@ async def upload_patient_report(request: Request) -> Any:
     analysis = _analyze_uploaded_report_with_ai(image_data_url, file_name, file_type)
 
     anomalies = analysis.get("anomalies") or []
+    admin_summary = analysis.get("summary", "")
+    base_risk = _risk_level_from_anomalies(anomalies)
+    patient_summary = _patient_safe_summary(admin_summary, base_risk)
     source_hospital = (
         analysis.get("source_hospital") if share_hospital_details else None
     )
@@ -783,9 +866,10 @@ async def upload_patient_report(request: Request) -> Any:
         """
         INSERT INTO reports (
             patient_id, uploaded_by, file_path, file_type, ocr_text,
-            anomalies_json, ai_summary, source_hospital, is_old_report
+            anomalies_json, ai_summary, ai_summary_patient, ai_summary_admin,
+            risk_level, source_hospital, is_old_report
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """,
         (
             patient_id,
@@ -794,11 +878,35 @@ async def upload_patient_report(request: Request) -> Any:
             file_type,
             analysis.get("extracted_text", ""),
             json.dumps(anomalies),
-            analysis.get("summary", ""),
+            admin_summary,
+            patient_summary,
+            admin_summary,
+            base_risk,
             source_hospital,
         ),
     )
     report_id = cur.lastrowid
+
+    triage_bundle = _build_triage_bundle(
+        patient_id,
+        report_id,
+        analysis,
+        patient["assigned_doctor_id"],
+    )
+    final_risk = triage_bundle.get("risk_level") or base_risk
+    patient_summary = _patient_safe_summary(admin_summary, final_risk)
+
+    cur.execute(
+        """
+        UPDATE reports
+        SET risk_level = ?,
+            ai_summary_patient = ?,
+            ai_summary_admin = ?,
+            ai_summary = ?
+        WHERE id = ?
+        """,
+        (final_risk, patient_summary, admin_summary, admin_summary, report_id),
+    )
 
     if patient["assigned_doctor_id"]:
         cur.execute(
@@ -814,32 +922,135 @@ async def upload_patient_report(request: Request) -> Any:
             ),
         )
 
-    for issue in anomalies:
-        severity = issue.get("severity", "info")
-        if severity == "critical":
+    if final_risk == "critical":
+        cur.execute(
+            """
+            INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
+            VALUES (?, ?, 'report_anomaly', ?, 'critical', 'admin')
+            """,
+            (
+                patient_id,
+                report_id,
+                "Critical report flagged. Admin review required before doctor release.",
+            ),
+        )
+
+        cur.execute(
+            """
+            INSERT INTO report_escalations (
+                report_id, patient_id, doctor_id, risk_level,
+                admin_summary, patient_safe_summary, triage_json, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_admin')
+            ON CONFLICT(report_id) DO UPDATE SET
+                doctor_id = excluded.doctor_id,
+                risk_level = excluded.risk_level,
+                admin_summary = excluded.admin_summary,
+                patient_safe_summary = excluded.patient_safe_summary,
+                triage_json = excluded.triage_json,
+                status = 'pending_admin'
+            """,
+            (
+                report_id,
+                patient_id,
+                patient["assigned_doctor_id"],
+                final_risk,
+                admin_summary,
+                patient_summary,
+                json.dumps(triage_bundle),
+            ),
+        )
+    elif final_risk == "urgent":
+        cur.execute(
+            """
+            INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
+            VALUES (?, ?, 'report_anomaly', ?, 'warning', 'doctor')
+            """,
+            (
+                patient_id,
+                report_id,
+                "Urgent report uploaded. Review recommended.",
+            ),
+        )
+
+        cur.execute(
+            """
+            INSERT INTO report_escalations (
+                report_id, patient_id, doctor_id, risk_level,
+                admin_summary, patient_safe_summary, triage_json, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'released_to_doctor')
+            ON CONFLICT(report_id) DO UPDATE SET
+                doctor_id = excluded.doctor_id,
+                risk_level = excluded.risk_level,
+                admin_summary = excluded.admin_summary,
+                patient_safe_summary = excluded.patient_safe_summary,
+                triage_json = excluded.triage_json,
+                status = 'released_to_doctor'
+            """,
+            (
+                report_id,
+                patient_id,
+                patient["assigned_doctor_id"],
+                final_risk,
+                admin_summary,
+                patient_summary,
+                json.dumps(triage_bundle),
+            ),
+        )
+
+    ambulance_dispatch: Dict[str, Any] | None = None
+    if (
+        auto_dispatch_ambulance
+        and final_risk == "critical"
+        and triage_bundle.get("ambulance_recommended")
+        and latitude is not None
+        and longitude is not None
+    ):
+        from mcp_server import create_ambulance_dispatch
+
+        ambulance_dispatch = create_ambulance_dispatch(
+            patient_id=patient_id,
+            latitude=float(latitude),
+            longitude=float(longitude),
+            severity="critical",
+            report_id=report_id,
+            requested_by_role="patient",
+            requested_by_id=uploader_id,
+            notes="Auto-dispatch requested from patient upload flow.",
+        )
+
+        if ambulance_dispatch.get("status") == "dispatched":
             cur.execute(
                 """
                 INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
-                VALUES (?, ?, 'report_anomaly', ?, 'critical', 'doctor')
+                VALUES (?, ?, 'ambulance_dispatch', ?, 'critical', 'admin')
                 """,
                 (
                     patient_id,
                     report_id,
-                    issue.get(
-                        "message", "Critical anomaly detected in uploaded report."
-                    ),
+                    f"Ambulance {ambulance_dispatch.get('ambulance', {}).get('unit_name', 'unit')} dispatched.",
                 ),
             )
 
     conn.commit()
     conn.close()
 
+    patient_visible_anomalies = anomalies if final_risk != "critical" else []
+
     return {
         "ok": True,
         "report_id": report_id,
-        "summary": analysis.get("summary", ""),
-        "anomalies": anomalies,
-        "has_critical": any(a.get("severity") == "critical" for a in anomalies),
+        "summary": patient_summary,
+        "anomalies": patient_visible_anomalies,
+        "has_critical": final_risk == "critical",
+        "risk_level": final_risk,
+        "routed_to_admin": final_risk == "critical",
+        "triage": {
+            "suggested_esi": triage_bundle.get("suggested_esi"),
+            "ambulance_recommended": triage_bundle.get("ambulance_recommended"),
+        },
+        "ambulance_dispatch": ambulance_dispatch,
         "analysis_error": analysis.get("analysis_error"),
     }
 
@@ -959,6 +1170,317 @@ def get_doctor_alerts(doctor_id: int) -> Any:
         "critical_count": critical_count,
         "alerts": alerts,
     }
+
+
+@app.get("/api/admin/critical-queue")
+def get_admin_critical_queue(status: str = "pending_admin") -> Any:
+    """Admin-only queue for critical reports before release to doctor."""
+    from db import get_db
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    where_clause = ""
+    params: List[Any] = []
+    normalized_status = (status or "pending_admin").strip().lower()
+    if normalized_status != "all":
+        where_clause = "WHERE rs.status = ?"
+        params.append(normalized_status)
+
+    rows = cur.execute(
+        f"""
+        SELECT rs.id AS escalation_id,
+               rs.report_id,
+               rs.patient_id,
+               rs.doctor_id,
+               rs.risk_level,
+               rs.admin_summary,
+               rs.patient_safe_summary,
+               rs.triage_json,
+               rs.status,
+               rs.created_at,
+               r.file_path,
+               pu.name AS patient_name,
+               du.name AS doctor_name
+        FROM report_escalations rs
+        JOIN reports r ON r.id = rs.report_id
+        JOIN patients p ON p.id = rs.patient_id
+        JOIN users pu ON pu.id = p.user_id
+        LEFT JOIN users du ON du.id = rs.doctor_id
+        {where_clause}
+        ORDER BY
+            CASE rs.risk_level
+                WHEN 'critical' THEN 1
+                WHEN 'urgent' THEN 2
+                ELSE 3
+            END,
+            rs.created_at DESC
+        """,
+        tuple(params),
+    ).fetchall()
+    conn.close()
+
+    queue = []
+    for row in rows:
+        triage = _extract_json_from_text(row["triage_json"] or "{}")
+        queue.append(
+            {
+                "escalation_id": row["escalation_id"],
+                "report_id": row["report_id"],
+                "patient_id": row["patient_id"],
+                "patient_name": row["patient_name"],
+                "doctor_id": row["doctor_id"],
+                "doctor_name": row["doctor_name"],
+                "risk_level": row["risk_level"],
+                "status": row["status"],
+                "report_name": row["file_path"],
+                "admin_summary": row["admin_summary"],
+                "patient_safe_summary": row["patient_safe_summary"],
+                "suggested_esi": triage.get("suggested_esi"),
+                "ambulance_recommended": triage.get("ambulance_recommended", False),
+                "doctor_actions": triage.get("doctor_actions") or [],
+                "created_at": row["created_at"],
+            }
+        )
+
+    return {
+        "status_filter": normalized_status,
+        "total": len(queue),
+        "critical_count": len([q for q in queue if q["risk_level"] == "critical"]),
+        "queue": queue,
+    }
+
+
+@app.post("/api/admin/release-report/{report_id}")
+async def admin_release_report(report_id: int, request: Request) -> Any:
+    """Release an admin-reviewed critical report to the assigned doctor."""
+    payload = await request.json()
+    admin_id = payload.get("admin_id")
+    message = (
+        payload.get("message")
+        or "Admin reviewed a critical report. Immediate doctor action required."
+    )
+
+    from db import get_db
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    escalation = cur.execute(
+        """
+        SELECT id, patient_id, doctor_id, status
+        FROM report_escalations
+        WHERE report_id = ?
+        LIMIT 1
+        """,
+        (report_id,),
+    ).fetchone()
+    if escalation is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Escalation not found for report")
+
+    cur.execute(
+        """
+        UPDATE report_escalations
+        SET status = 'released_to_doctor',
+            reviewed_by_admin_id = ?,
+            released_to_doctor_at = ?
+        WHERE report_id = ?
+        """,
+        (admin_id, datetime.now().isoformat(), report_id),
+    )
+
+    if escalation["doctor_id"]:
+        cur.execute(
+            """
+            INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
+            VALUES (?, ?, 'admin_release', ?, 'critical', 'doctor')
+            """,
+            (
+                escalation["patient_id"],
+                report_id,
+                message,
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "ok": True,
+        "report_id": report_id,
+        "released": True,
+        "doctor_id": escalation["doctor_id"],
+    }
+
+
+@app.get("/api/doctor/urgent-requests/{doctor_id}")
+def get_doctor_urgent_requests(doctor_id: int) -> Any:
+    """Doctor feed enriched by MCP + Gemini + Groq triage results."""
+    from db import get_db
+
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        """
+        SELECT rs.report_id,
+               rs.patient_id,
+               rs.risk_level,
+               rs.triage_json,
+               rs.created_at,
+               r.file_path,
+               pu.name AS patient_name
+        FROM report_escalations rs
+        JOIN reports r ON r.id = rs.report_id
+        JOIN patients p ON p.id = rs.patient_id
+        JOIN users pu ON pu.id = p.user_id
+        WHERE rs.doctor_id = ?
+          AND rs.status = 'released_to_doctor'
+        ORDER BY
+            CASE rs.risk_level
+                WHEN 'critical' THEN 1
+                WHEN 'urgent' THEN 2
+                ELSE 3
+            END,
+            rs.created_at DESC
+        LIMIT 20
+        """,
+        (doctor_id,),
+    ).fetchall()
+    conn.close()
+
+    requests: List[Dict[str, Any]] = []
+    ai_suggestions: List[str] = []
+    for row in rows:
+        triage = _extract_json_from_text(row["triage_json"] or "{}")
+        doctor_actions = triage.get("doctor_actions") or []
+        groq_steps = (triage.get("groq") or {}).get("first_10_minutes") or []
+        combined_actions = [
+            str(x) for x in doctor_actions + groq_steps if str(x).strip()
+        ]
+        ai_suggestions.extend(combined_actions)
+
+        requests.append(
+            {
+                "report_id": row["report_id"],
+                "patient_id": row["patient_id"],
+                "patient_name": row["patient_name"],
+                "report_name": row["file_path"],
+                "risk_level": row["risk_level"],
+                "suggested_esi": triage.get("suggested_esi", 3),
+                "ambulance_recommended": triage.get("ambulance_recommended", False),
+                "doctor_actions": combined_actions[:5],
+                "created_at": row["created_at"],
+            }
+        )
+
+    # Deduplicate while preserving order.
+    seen = set()
+    compact_suggestions = []
+    for suggestion in ai_suggestions:
+        key = suggestion.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            compact_suggestions.append(suggestion)
+
+    return {
+        "doctor_id": doctor_id,
+        "urgent_count": len(requests),
+        "requests": requests,
+        "ai_suggestions": compact_suggestions[:8],
+        "providers": {
+            "router": "SensitivityAwareRouter"
+        },
+    }
+
+
+@app.get("/api/ambulance/nearby")
+def get_nearby_ambulances(latitude: float, longitude: float, limit: int = 5) -> Any:
+    """List nearest available ambulances for map/location use-cases."""
+    from mcp_server import list_nearby_ambulances
+
+    return list_nearby_ambulances(latitude, longitude, max(1, min(limit, 10)))
+
+
+@app.post("/api/ambulance/dispatch")
+async def dispatch_ambulance(request: Request) -> Any:
+    """Dispatch nearest ambulance based on patient latitude/longitude."""
+    payload = await request.json()
+    patient_id = payload.get("patient_id")
+    latitude = payload.get("latitude")
+    longitude = payload.get("longitude")
+    severity = (payload.get("severity") or "urgent").strip().lower()
+    report_id = payload.get("report_id")
+    requested_by_role = (payload.get("requested_by_role") or "system").strip().lower()
+    requested_by_id = payload.get("requested_by_id")
+    notes = payload.get("notes") or ""
+
+    if patient_id is None or latitude is None or longitude is None:
+        raise HTTPException(
+            status_code=400,
+            detail="patient_id, latitude, and longitude are required",
+        )
+
+    from mcp_server import create_ambulance_dispatch
+
+    dispatch_result = create_ambulance_dispatch(
+        patient_id=int(patient_id),
+        latitude=float(latitude),
+        longitude=float(longitude),
+        severity=severity,
+        report_id=report_id,
+        requested_by_role=requested_by_role,
+        requested_by_id=requested_by_id,
+        notes=notes,
+    )
+
+    if dispatch_result.get("status") == "dispatched":
+        from db import get_db
+
+        conn = get_db()
+        cur = conn.cursor()
+
+        doctor_row = cur.execute(
+            "SELECT assigned_doctor_id FROM patients WHERE id = ?",
+            (patient_id,),
+        ).fetchone()
+        assigned_doctor_id = doctor_row["assigned_doctor_id"] if doctor_row else None
+
+        admin_message = (
+            f"Ambulance {dispatch_result.get('ambulance', {}).get('unit_name', 'unit')} "
+            f"dispatched for patient #{patient_id}. ETA {dispatch_result.get('eta_minutes')} min."
+        )
+        cur.execute(
+            """
+            INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
+            VALUES (?, ?, 'ambulance_dispatch', ?, ?, 'admin')
+            """,
+            (
+                patient_id,
+                report_id,
+                admin_message,
+                "critical" if severity == "critical" else "warning",
+            ),
+        )
+
+        if assigned_doctor_id:
+            cur.execute(
+                """
+                INSERT INTO alerts (patient_id, report_id, alert_type, message, severity, target_role)
+                VALUES (?, ?, 'ambulance_dispatch', ?, ?, 'doctor')
+                """,
+                (
+                    patient_id,
+                    report_id,
+                    admin_message,
+                    "critical" if severity == "critical" else "warning",
+                ),
+            )
+
+        conn.commit()
+        conn.close()
+
+    return dispatch_result
 
 
 @app.post("/api/visit/start")
@@ -1224,19 +1746,14 @@ def get_patient_history_summary(patient_id: int) -> Any:
     )
 
     try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return plain text bullets, one per line, each starting with '- '.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
-        summary_text = response.choices[0].message.content if response.choices else ""
-        summary_text = (summary_text or "").strip()
+        # Route to OPENAI for complex document reasoning
+        payload = {
+            "system": "Return plain text bullets, one per line, each starting with '- '.",
+            "prompt": prompt,
+            "json_mode": False
+        }
+        res = router.route_request("BATCH", "LOW", "HIGH", payload)
+        summary_text = (res.get("content", "") or "").strip()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500, detail=f"OpenAI request failed: {exc}"

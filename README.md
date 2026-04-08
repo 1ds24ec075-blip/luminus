@@ -43,6 +43,14 @@ Create `.env` in project root and add:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_VISION_MODEL=gpt-4o-mini
+LUMINUS_SESSION_MEMORY_SIZE=40
+
+# Optional model providers
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-1.5-flash
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 You can copy from template:
@@ -52,6 +60,12 @@ Copy-Item .env.example .env
 ```
 
 Then replace the API key value in `.env`.
+
+Notes:
+
+- `OPENAI_API_KEY` is required.
+- `GEMINI_API_KEY` and `GROQ_API_KEY` are optional; app falls back gracefully if missing.
+- Ambulance location map uses OpenStreetMap + Leaflet in frontend and does not require a paid map API key.
 
 ## 4. Run the Server
 

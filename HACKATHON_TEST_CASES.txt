@@ -1,0 +1,141 @@
+Luminus Hackathon Test Cases
+Date: 2026-04-09
+
+Prerequisites
+1. Python venv installed and dependencies from requirements.txt installed.
+2. Server running: .venv/Scripts/python.exe -m uvicorn server:app --reload
+3. .env contains at least OPENAI_API_KEY.
+4. Optional free provider keys for model segregation:
+   GEMINI_API_KEY=...
+   GROQ_API_KEY=...
+
+Suggested .env additions
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_VISION_MODEL=gpt-4o-mini
+GEMINI_MODEL=gemini-1.5-flash
+GROQ_MODEL=llama-3.3-70b-versatile
+LUMINUS_SESSION_MEMORY_SIZE=40
+
+Quick Health Check
+TC-01
+- Open http://127.0.0.1:8000/health
+- Expect: ok=true, model name, gemini_enabled true/false, groq_enabled true/false, session_memory_messages >= 16.
+
+Patient Registration + Login
+TC-02
+- Role: Patient.
+- Login with new email + phone not present in DB.
+- Confirm prompt to create patient profile.
+- Expect successful login and dashboard.
+
+Patient First Onboarding
+TC-03
+- New patient with no previous reports.
+- Expect onboarding upload prompt appears.
+
+Upload Report (Image/PDF/Camera)
+TC-04
+- Go to Upload Records.
+- Upload image or PDF file.
+- Choose SHARE or HIDE privacy option.
+- Expect upload success toast and report appears in patient reports.
+
+TC-05 (Camera)
+- Use mobile browser.
+- Open upload picker and capture from camera.
+- Expect captured image upload works.
+
+Critical Privacy (No Panic to Patient)
+TC-06
+- Upload a report likely to produce critical anomaly (for example diabetes evidence with no diabetic meds).
+- Expect patient summary is safe/non-panic wording.
+- Expect detailed critical data is NOT shown in patient report list.
+- Expect response routed_to_admin=true for critical.
+
+Admin Critical Queue
+TC-07
+- Login as Admin role.
+- Open Critical Queue.
+- Expect critical report present with admin summary, risk level, suggested ESI, and actions.
+
+Admin Release to Doctor
+TC-08
+- In admin critical queue, click Release to Doctor.
+- Expect success toast and item removed/refreshed from pending queue.
+- Doctor should receive alert/urgent request feed entry.
+
+Doctor Urgent Feed (Gemini + Groq Segregation)
+TC-09
+- Login as Doctor role.
+- Check Priority Queue and AI Assist panels.
+- Expect urgent requests with risk level, suggested ESI, doctor actions.
+- Expect AI suggestions list populated from triage outputs.
+
+Doctor Alerts
+TC-10
+- Verify alert banner shows unresolved alerts.
+- Critical releases from admin should appear as doctor alerts.
+
+MCP + Multi-Model Orchestration
+TC-11
+- Upload patient report and inspect admin queue item.
+- Expect triage fields generated from MCP urgency + Gemini/Groq logic.
+- If GEMINI_API_KEY/GROQ_API_KEY missing, expect graceful fallback (no crash).
+
+Ambulance Dispatch (Patient Emergency)
+TC-12
+- Login as patient.
+- Click Emergency Help.
+- Allow location permission.
+- Expect nearest available ambulance is dispatched (or graceful unavailable message).
+
+Ambulance Dispatch (Auto from Critical Upload)
+TC-13
+- During patient upload, choose auto-dispatch confirmation and allow location.
+- For critical report with ambulance recommendation, expect dispatch result in response + toast.
+
+Ambulance Dispatch (Admin Desk Manual)
+TC-14
+- Login as admin.
+- Go to Ambulance Desk.
+- Fill patient_id + coordinates + severity and click Dispatch Ambulance.
+- Expect dispatch result with unit name, ETA, distance.
+
+Nearby Ambulances
+TC-15
+- In admin Ambulance Desk, enter coordinates and click Find Nearby Units.
+- Expect ranked nearby available units with distance.
+
+Consent Handling
+TC-16
+- Upload once with SHARE and once with HIDE.
+- Expect report_consent row created and source hospital details honored by consent.
+
+Patient Report Safety View
+TC-17
+- Visit patient Reports & Records.
+- Expect summaries shown from ai_summary_patient (safe wording for critical).
+
+Prescription Validation
+TC-18
+- In doctor portal: start consultation, upload prescription, run validation.
+- Expect validation severity + issues and critical alert creation when discrepancy exists.
+
+Chat Memory Capacity Increase
+TC-19
+- In patient dashboard, open Lumi chat and send multiple messages.
+- Expect session remains coherent for longer context due increased memory size.
+
+API Smoke Tests (Optional via browser/postman)
+TC-20
+- GET /api/admin/critical-queue
+- POST /api/admin/release-report/{report_id}
+- GET /api/doctor/urgent-requests/{doctor_id}
+- GET /api/ambulance/nearby?latitude=12.97&longitude=77.59
+- POST /api/ambulance/dispatch
+- Expect valid JSON responses and no 500 errors for valid payloads.
+
+Known Notes
+- Critical report details are intentionally gated from patient-facing responses to reduce panic.
+- Admin is the control point for releasing critical findings to doctors.
+- Gemini/Groq are optional and can use free API keys; OpenAI remains the main brain.

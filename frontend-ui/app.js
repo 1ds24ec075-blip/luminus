@@ -22,6 +22,9 @@
   window.LUMINUS_API_BASE = API_BASE;
   const LOGIN_API_URL = new URL('/api/login', API_BASE).toString();
   const REGISTER_PATIENT_API_URL = new URL('/api/patient/register', API_BASE).toString();
+  const ADMIN_CRITICAL_QUEUE_API_URL = new URL('/api/admin/critical-queue', API_BASE).toString();
+  const AMBULANCE_DISPATCH_API_URL = new URL('/api/ambulance/dispatch', API_BASE).toString();
+  const AMBULANCE_NEARBY_API_URL = new URL('/api/ambulance/nearby', API_BASE).toString();
 
   // -------- Role metadata --------
   const ROLE_META = {
@@ -51,7 +54,11 @@
       color: 'purple',
       welcomeSub: 'Manage hospital operations',
       dashGreeting: 'Hospital operations at a glance.',
-      nav: [{ id: 'overview', label: 'Operations', icon: 'activity' }]
+      nav: [
+        { id: 'overview', label: 'Operations', icon: 'activity' },
+        { id: 'critical', label: 'Critical Queue', icon: 'alert' },
+        { id: 'dispatch', label: 'Ambulance Desk', icon: 'truck' }
+      ]
     },
     lab: {
       label: 'Lab Admin',
@@ -142,7 +149,7 @@
     }
   }
 
-  async function uploadPatientReport(record, file, shareHospitalDetails) {
+  async function uploadPatientReport(record, file, shareHospitalDetails, dispatchOptions = {}) {
     const patientId = record.patient_id;
     const uploadedBy = record.clinical_id;
     if (!patientId || !uploadedBy) {
@@ -166,6 +173,9 @@
         file_type: file.type || 'image',
         image_data_url: imageDataUrl,
         share_hospital_details: shareHospitalDetails,
+        auto_dispatch_ambulance: Boolean(dispatchOptions.autoDispatch),
+        latitude: dispatchOptions.latitude,
+        longitude: dispatchOptions.longitude,
       }),
     });
 
@@ -201,6 +211,317 @@
       uploadBtn.classList.add('active');
       await renderUploadDashboard(page, record, username);
     }
+  }
+
+  function getCurrentLocation() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation is not supported in this browser.'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          resolve({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
+        },
+        () => reject(new Error('Unable to fetch your location. Please enable GPS/location.')),
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+  }
+
+  async function dispatchAmbulance(payload) {
+    const response = await fetch(AMBULANCE_DISPATCH_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Ambulance dispatch failed');
+    }
+    return data;
+  }
+
+  let leafletLoaderPromise = null;
+
+  async function ensureLeafletLoaded() {
+    if (window.L && typeof window.L.map === 'function') {
+      return true;
+    }
+
+    if (leafletLoaderPromise) {
+      await leafletLoaderPromise;
+      return true;
+    }
+
+    leafletLoaderPromise = new Promise((resolve, reject) => {
+      const cssId = 'leaflet-css-runtime';
+      if (!document.getElementById(cssId)) {
+        const css = document.createElement('link');
+        css.id = cssId;
+        css.rel = 'stylesheet';
+        css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        document.head.appendChild(css);
+      }
+
+      const existing = document.getElementById('leaflet-js-runtime');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(true), { once: true });
+        existing.addEventListener('error', () => reject(new Error('Leaflet failed to load.')), { once: true });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.id = 'leaflet-js-runtime';
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => reject(new Error('Leaflet failed to load.'));
+      document.head.appendChild(script);
+    });
+
+    try {
+      await leafletLoaderPromise;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function searchOpenStreetMap(query) {
+    const q = String(query || '').trim();
+    if (q.length < 3) return [];
+
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=${encodeURIComponent(q)}`;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      if (!Array.isArray(data)) return [];
+      return data
+        .map((item) => ({
+          latitude: Number(item.lat),
+          longitude: Number(item.lon),
+          label: item.display_name || `${item.lat}, ${item.lon}`,
+        }))
+        .filter((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude));
+    } catch {
+      return [];
+    }
+  }
+
+  async function pickLocationWithMap(initialLocation, titleText = 'Confirm emergency pickup location') {
+    const mapsReady = await ensureLeafletLoaded();
+    if (!mapsReady) return initialLocation;
+
+    const fallbackLat = Number(initialLocation?.latitude) || 12.9716;
+    const fallbackLng = Number(initialLocation?.longitude) || 77.5946;
+
+    return new Promise((resolve, reject) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'map-picker-overlay';
+      overlay.innerHTML = `
+        <div class="map-picker-dialog" role="dialog" aria-modal="true">
+          <div class="map-picker-header">
+            <h3>${titleText}</h3>
+            <button type="button" class="map-picker-close" aria-label="Close map picker">×</button>
+          </div>
+          <div class="map-picker-search-row">
+            <input id="mapPickerAddress" class="map-picker-address" type="text" placeholder="Search address or landmark" />
+            <button type="button" class="btn btn-secondary" id="mapPickerSearchBtn">Search</button>
+          </div>
+          <div class="map-picker-search-results" id="mapPickerResults"></div>
+          <div id="mapPickerCanvas" class="map-picker-canvas"></div>
+          <p class="map-picker-coords" id="mapPickerCoords"></p>
+          <div class="map-picker-actions">
+            <button type="button" class="btn btn-secondary" data-action="cancel">Cancel</button>
+            <button type="button" class="btn btn-primary" data-action="confirm">Use This Location</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      const closeBtn = overlay.querySelector('.map-picker-close');
+      const cancelBtn = overlay.querySelector('[data-action="cancel"]');
+      const confirmBtn = overlay.querySelector('[data-action="confirm"]');
+      const canvas = overlay.querySelector('#mapPickerCanvas');
+      const addressInput = overlay.querySelector('#mapPickerAddress');
+      const searchBtn = overlay.querySelector('#mapPickerSearchBtn');
+      const resultsBox = overlay.querySelector('#mapPickerResults');
+      const coordsEl = overlay.querySelector('#mapPickerCoords');
+
+      let selected = { latitude: fallbackLat, longitude: fallbackLng };
+
+      const map = L.map(canvas).setView([fallbackLat, fallbackLng], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+      }).addTo(map);
+
+      const marker = L.marker([fallbackLat, fallbackLng], { draggable: true }).addTo(map);
+
+      const updateSelected = (lat, lng) => {
+        selected = {
+          latitude: Number(Number(lat).toFixed(6)),
+          longitude: Number(Number(lng).toFixed(6)),
+        };
+        coordsEl.textContent = `Latitude: ${selected.latitude} | Longitude: ${selected.longitude}`;
+      };
+
+      updateSelected(fallbackLat, fallbackLng);
+
+      marker.on('dragend', () => {
+        const pos = marker.getLatLng();
+        updateSelected(pos.lat, pos.lng);
+        map.panTo(pos);
+      });
+
+      map.on('click', (event) => {
+        marker.setLatLng(event.latlng);
+        updateSelected(event.latlng.lat, event.latlng.lng);
+      });
+
+      const runSearch = async () => {
+        const results = await searchOpenStreetMap(addressInput.value);
+        if (!results.length) {
+          resultsBox.innerHTML = '<div class="map-search-empty">No results found</div>';
+          return;
+        }
+
+        resultsBox.innerHTML = results
+          .map((item, idx) => `<button type="button" class="map-search-item" data-idx="${idx}">${item.label}</button>`)
+          .join('');
+
+        resultsBox.querySelectorAll('.map-search-item').forEach((button) => {
+          button.addEventListener('click', () => {
+            const item = results[Number(button.dataset.idx || -1)];
+            if (!item) return;
+            const target = L.latLng(item.latitude, item.longitude);
+            marker.setLatLng(target);
+            map.setView(target, 16);
+            updateSelected(item.latitude, item.longitude);
+            resultsBox.innerHTML = '';
+          });
+        });
+      };
+
+      searchBtn.addEventListener('click', runSearch);
+      addressInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          runSearch();
+        }
+      });
+
+      const cleanup = () => {
+        map.remove();
+        if (overlay && overlay.parentNode) {
+          overlay.parentNode.removeChild(overlay);
+        }
+      };
+
+      closeBtn.addEventListener('click', () => {
+        cleanup();
+        reject(new Error('Location selection cancelled.'));
+      });
+
+      cancelBtn.addEventListener('click', () => {
+        cleanup();
+        reject(new Error('Location selection cancelled.'));
+      });
+
+      confirmBtn.addEventListener('click', () => {
+        cleanup();
+        resolve(selected);
+      });
+    });
+  }
+
+  async function initAdminDispatchMap(page) {
+    const mapContainer = page.querySelector('#dispatchMapPreview');
+    const statusEl = page.querySelector('#dispatchMapStatus');
+    const latInput = page.querySelector('#dispatchLat');
+    const lngInput = page.querySelector('#dispatchLng');
+    const addressInput = page.querySelector('#dispatchAddress');
+    const searchBtn = page.querySelector('#dispatchAddressSearchBtn');
+    const resultsBox = page.querySelector('#dispatchAddressResults');
+    if (!mapContainer || !statusEl || !latInput || !lngInput || !addressInput || !searchBtn || !resultsBox) return;
+
+    const mapsReady = await ensureLeafletLoaded();
+    if (!mapsReady) {
+      statusEl.textContent = 'Map preview unavailable right now. You can still enter latitude and longitude manually.';
+      return;
+    }
+
+    const initialLat = Number(latInput.value) || 12.9716;
+    const initialLng = Number(lngInput.value) || 77.5946;
+    mapContainer.innerHTML = '';
+
+    const map = L.map(mapContainer).setView([initialLat, initialLng], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+    const marker = L.marker([initialLat, initialLng], { draggable: true }).addTo(map);
+
+    const syncInputs = (lat, lng) => {
+      latInput.value = Number(Number(lat).toFixed(6));
+      lngInput.value = Number(Number(lng).toFixed(6));
+      statusEl.textContent = `Live location selected: ${latInput.value}, ${lngInput.value}`;
+    };
+
+    syncInputs(initialLat, initialLng);
+
+    map.on('click', (event) => {
+      marker.setLatLng(event.latlng);
+      syncInputs(event.latlng.lat, event.latlng.lng);
+    });
+
+    marker.on('dragend', () => {
+      const pos = marker.getLatLng();
+      syncInputs(pos.lat, pos.lng);
+      map.panTo(pos);
+    });
+
+    const runSearch = async () => {
+      const results = await searchOpenStreetMap(addressInput.value);
+      if (!results.length) {
+        resultsBox.innerHTML = '<div class="map-search-empty">No results found</div>';
+        return;
+      }
+
+      resultsBox.innerHTML = results
+        .map((item, idx) => `<button type="button" class="map-search-item" data-idx="${idx}">${item.label}</button>`)
+        .join('');
+
+      resultsBox.querySelectorAll('.map-search-item').forEach((button) => {
+        button.addEventListener('click', () => {
+          const item = results[Number(button.dataset.idx || -1)];
+          if (!item) return;
+          marker.setLatLng([item.latitude, item.longitude]);
+          map.setView([item.latitude, item.longitude], 16);
+          syncInputs(item.latitude, item.longitude);
+          resultsBox.innerHTML = '';
+        });
+      });
+    };
+
+    searchBtn.addEventListener('click', runSearch);
+    addressInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runSearch();
+      }
+    });
   }
 
   // -------- DOM References --------
@@ -499,7 +820,9 @@
     // Main content depends on role and current nav
     const mainContentHTML = role === 'patient'
       ? getPatientDashboard(record)
-      : getGenericDashboard(record, role, meta);
+      : role === 'admin'
+        ? getAdminOverviewDashboard(record)
+        : getGenericDashboard(record, role, meta);
 
     page.innerHTML = `
       <aside class="dash-sidebar">
@@ -545,6 +868,34 @@
 
     document.body.appendChild(page);
 
+    const emergencyBtn = page.querySelector('#emergencyBtn');
+    if (emergencyBtn) {
+      emergencyBtn.addEventListener('click', async () => {
+        if (role === 'patient') {
+          try {
+            emergencyBtn.disabled = true;
+            emergencyBtn.textContent = 'Locating and dispatching...';
+            await requestPatientEmergencyDispatch(record);
+          } finally {
+            emergencyBtn.disabled = false;
+            emergencyBtn.innerHTML = `
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.1 2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7 12.8 12.8 0 0 0 .7 2.8 2 2 0 0 1-.5 2.1L8.1 9.7a16 16 0 0 0 6 6l1.1-1.1a2 2 0 0 1 2.1-.5 12.8 12.8 0 0 0 2.8.7 2 2 0 0 1 1.7 2z"/></svg>
+              Emergency Help
+            `;
+          }
+          return;
+        }
+
+        if (role === 'admin') {
+          const dispatchNav = page.querySelector('.sidebar-nav-item[data-nav="dispatch"]');
+          if (dispatchNav) dispatchNav.click();
+          return;
+        }
+
+        showToast('Emergency dispatch is available from patient/admin workflow.', 'error');
+      });
+    }
+
     // Animate health rings after paint
     if (role === 'patient') {
       requestAnimationFrame(() => {
@@ -573,6 +924,12 @@
           initReportEvents(page, record);
         } else if (navId === 'upload') {
           renderUploadDashboard(page, record, username);
+        } else if (role === 'admin' && navId === 'critical') {
+          contentArea.innerHTML = getAdminCriticalQueueView();
+          loadAdminCriticalQueue(page, record);
+        } else if (role === 'admin' && navId === 'dispatch') {
+          contentArea.innerHTML = getAdminDispatchView();
+          initAdminDispatchEvents(page, record);
         } else if (navId === 'meds') {
           contentArea.innerHTML = getMedicationDashboard(record);
           initMedicationEvents(page);
@@ -585,14 +942,21 @@
           initTimelineEvents(page);
         } else if (navId === 'billing') {
           contentArea.innerHTML = getBillingDashboard(record);
+        } else if (navId === 'ollama') {
+          contentArea.innerHTML = getOllamaTestDashboard();
+          initOllamaTestEvents(page);
         } else {
           contentArea.innerHTML = role === 'patient'
             ? getPatientDashboard(record)
-            : getGenericDashboard(record, role, meta);
+            : role === 'admin'
+              ? getAdminOverviewDashboard(record)
+              : getGenericDashboard(record, role, meta);
           
           if (role === 'patient') {
              requestAnimationFrame(() => animateHealthRings());
              initPatientEvents(page, username, record, role);
+          } else if (role === 'admin') {
+            loadAdminCriticalQueue(page, record, true);
           }
         }
       });
@@ -603,6 +967,10 @@
 
     if (role === 'patient') {
       maybeStartPatientOnboarding(page, record, username);
+    }
+
+    if (role === 'admin') {
+      loadAdminCriticalQueue(page, record, true);
     }
   }
 
@@ -698,6 +1066,13 @@
     addLumiMessage(messages, 'user', userMessage);
     input.value = '';
     sendBtn.disabled = true;
+
+    const userMsgLower = userMessage.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (userMsgLower === 'hi' || userMsgLower === 'hello' || userMsgLower === 'hey') {
+      addLumiMessage(messages, 'assistant', 'Hi there! How can I help you today?');
+      sendBtn.disabled = false;
+      return;
+    }
 
     const thinkingBubble = addLumiMessage(messages, 'assistant', 'Let me check your records...');
 
@@ -1053,7 +1428,7 @@
         <div class="upload-dropzone" id="uploadDropzone">
           <div class="upload-drop-title">Drop image here or choose file</div>
           <div class="upload-drop-sub">Supported: JPG, PNG, WEBP, PDF</div>
-          <input type="file" id="prescriptionFileInput" accept="image/*,.pdf" hidden />
+          <input type="file" id="prescriptionFileInput" accept="image/*,.pdf" capture="environment" hidden />
           <button class="upload-select-btn" id="uploadSelectBtn">Choose Photo</button>
         </div>
 
@@ -1076,6 +1451,7 @@
       if (!files || !files.length) return;
 
       let shareHospitalDetails = false;
+      let dispatchOptions = { autoDispatch: false };
       if (record.role === 'patient' && record.patient_id) {
         const choice = window.prompt(
           'Report privacy option:\nType SHARE to include previous hospital/doctor details.\nType HIDE to hide those details.\nPress Cancel to stop upload.',
@@ -1096,14 +1472,49 @@
           showToast('Invalid option. Type SHARE or HIDE.', 'error');
           return;
         }
+
+        const wantsAutoDispatch = window.confirm(
+          'If this report is detected as CRITICAL, should we auto-dispatch ambulance using your live location?'
+        );
+        if (wantsAutoDispatch) {
+          try {
+            const loc = await getCurrentLocation();
+            let selectedLoc = loc;
+            try {
+              selectedLoc = await pickLocationWithMap(loc, 'Confirm location for auto-dispatch');
+            } catch {
+              selectedLoc = loc;
+            }
+            dispatchOptions = {
+              autoDispatch: true,
+              latitude: selectedLoc.latitude,
+              longitude: selectedLoc.longitude,
+            };
+          } catch (error) {
+            dispatchOptions = { autoDispatch: false };
+            showToast('Location unavailable. Upload will continue without auto-dispatch.', 'error');
+          }
+        }
       }
 
       try {
         if (record.role === 'patient' && record.patient_id) {
+          let lastUpload = null;
           for (const file of Array.from(files)) {
-            await uploadPatientReport(record, file, shareHospitalDetails);
+            lastUpload = await uploadPatientReport(record, file, shareHospitalDetails, dispatchOptions);
           }
-          showToast('Report uploaded and AI analysis completed.', 'success');
+
+          if (lastUpload?.routed_to_admin) {
+            showToast('Report flagged for urgent admin review. Doctor will be informed after review.', 'success');
+          } else {
+            showToast('Report uploaded and AI analysis completed.', 'success');
+          }
+
+          if (lastUpload?.ambulance_dispatch?.status === 'dispatched') {
+            const unit = lastUpload.ambulance_dispatch?.ambulance?.unit_name || 'Ambulance';
+            showToast(`${unit} auto-dispatched. ETA ${lastUpload.ambulance_dispatch.eta_minutes} min.`, 'success');
+          }
+
           await renderUploadDashboard(page, record, username);
           return;
         }
@@ -1552,6 +1963,309 @@
     }
   }
 
+  async function requestPatientEmergencyDispatch(record) {
+    if (!record.patient_id) {
+      throw new Error('Patient profile not linked. Please log in again.');
+    }
+
+    const location = await getCurrentLocation();
+    let selectedLocation = location;
+    try {
+      selectedLocation = await pickLocationWithMap(location, 'Confirm emergency pickup location');
+    } catch {
+      selectedLocation = location;
+    }
+    const dispatch = await dispatchAmbulance({
+      patient_id: record.patient_id,
+      latitude: selectedLocation.latitude,
+      longitude: selectedLocation.longitude,
+      severity: 'critical',
+      requested_by_role: 'patient',
+      requested_by_id: record.clinical_id || record.id,
+      notes: 'Patient requested emergency help from dashboard.',
+    });
+
+    if (dispatch.status === 'dispatched') {
+      const unit = dispatch.ambulance?.unit_name || 'ambulance unit';
+      showToast(`${unit} dispatched. ETA ${dispatch.eta_minutes} min.`, 'success');
+      return;
+    }
+    showToast(dispatch.message || 'No ambulance currently available.', 'error');
+  }
+
+  function getAdminOverviewDashboard(record) {
+    return `
+      <div class="admin-dashboard-grid">
+        <div class="admin-kpi-card">
+          <h3>Critical Review Queue</h3>
+          <p id="adminCriticalCount">Loading...</p>
+        </div>
+        <div class="admin-kpi-card">
+          <h3>Provider Stack</h3>
+          <p>OpenAI main brain + Gemini triage + Groq action engine</p>
+        </div>
+      </div>
+      <div class="admin-queue-card">
+        <div class="admin-queue-header-row">
+          <h3>Latest Critical Cases</h3>
+          <button class="btn-small btn-primary" id="adminRefreshQueueBtn">Refresh</button>
+        </div>
+        <div id="adminCriticalPreview">Loading queue...</div>
+      </div>
+    `;
+  }
+
+  function getAdminCriticalQueueView() {
+    return `
+      <div class="admin-queue-card">
+        <div class="admin-queue-header-row">
+          <h3>Admin Critical Queue</h3>
+          <button class="btn-small btn-primary" id="adminRefreshQueueBtn">Refresh</button>
+        </div>
+        <p class="upload-help-text">Critical reports are hidden from patient panic view until admin releases to doctor.</p>
+        <div id="adminCriticalQueueList">Loading queue...</div>
+      </div>
+    `;
+  }
+
+  function getAdminDispatchView() {
+    return `
+      <div class="admin-queue-card">
+        <h3>Ambulance Dispatch Desk</h3>
+        <p class="upload-help-text">Dispatch nearest ambulance using patient latitude/longitude.</p>
+
+        <div class="admin-dispatch-grid">
+          <input id="dispatchPatientId" type="number" placeholder="Patient ID" />
+          <input id="dispatchReportId" type="number" placeholder="Report ID (optional)" />
+          <input id="dispatchAddress" type="text" placeholder="Search location by address/landmark" />
+          <button class="btn-small btn-secondary" id="dispatchAddressSearchBtn">Search Address</button>
+          <input id="dispatchLat" type="number" step="any" placeholder="Latitude" />
+          <input id="dispatchLng" type="number" step="any" placeholder="Longitude" />
+          <select id="dispatchSeverity">
+            <option value="critical">Critical</option>
+            <option value="urgent">Urgent</option>
+            <option value="routine">Routine</option>
+          </select>
+          <button class="btn-small btn-secondary" id="useMyLocationBtn">Use My Location</button>
+        </div>
+
+        <div class="admin-dispatch-actions">
+          <button class="btn btn-primary" id="dispatchNowBtn">Dispatch Ambulance</button>
+          <button class="btn btn-secondary" id="findNearbyBtn">Find Nearby Units</button>
+        </div>
+
+        <div id="adminDispatchOutput" class="validation-status" style="margin-top:12px;">No dispatch action yet.</div>
+        <div id="dispatchAddressResults" class="map-picker-search-results" style="margin-top:8px;"></div>
+        <p id="dispatchMapStatus" class="upload-help-text" style="margin-top:10px;">Loading map preview...</p>
+        <div id="dispatchMapPreview" class="dispatch-map-preview"></div>
+        <div id="adminNearbyList" class="reports-list" style="margin-top:12px;"></div>
+      </div>
+    `;
+  }
+
+  async function releaseCriticalReport(reportId, record) {
+    const response = await fetch(new URL(`/api/admin/release-report/${reportId}`, API_BASE).toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        admin_id: record.clinical_id || record.id,
+        message: 'Admin released critical report to doctor. Please act immediately.',
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Failed to release report');
+    }
+    return data;
+  }
+
+  async function loadAdminCriticalQueue(page, record, compact = false) {
+    const targetId = compact ? '#adminCriticalPreview' : '#adminCriticalQueueList';
+    const target = page.querySelector(targetId);
+    if (!target) return;
+
+    try {
+      target.innerHTML = 'Loading critical queue...';
+      const response = await fetch(`${ADMIN_CRITICAL_QUEUE_API_URL}?status=pending_admin`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || 'Unable to load critical queue');
+      }
+
+      const queue = Array.isArray(data.queue) ? data.queue : [];
+      const countEl = page.querySelector('#adminCriticalCount');
+      if (countEl) {
+        countEl.textContent = `${data.critical_count || queue.length} pending critical`; 
+      }
+
+      if (!queue.length) {
+        target.innerHTML = '<div class="upload-empty">No pending critical escalations.</div>';
+      } else {
+        target.innerHTML = queue.map((item) => `
+          <div class="admin-critical-item" data-report-id="${item.report_id}" data-patient-id="${item.patient_id}">
+            <div class="admin-critical-main">
+              <div class="admin-critical-title">${item.patient_name} • ${item.report_name || 'Report ' + item.report_id}</div>
+              <div class="admin-critical-meta">Risk: ${item.risk_level.toUpperCase()} • Suggested ESI: ${item.suggested_esi || 3}</div>
+              <div class="admin-critical-summary">${item.admin_summary || 'No summary available.'}</div>
+            </div>
+            <div class="admin-critical-actions">
+              <button class="btn-small btn-primary" data-action="release">Release to Doctor</button>
+              <button class="btn-small btn-secondary" data-action="dispatch">Dispatch Ambulance</button>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      const refreshBtn = page.querySelector('#adminRefreshQueueBtn');
+      if (refreshBtn) {
+        refreshBtn.onclick = () => loadAdminCriticalQueue(page, record, compact);
+      }
+
+      target.querySelectorAll('[data-action="release"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const row = btn.closest('.admin-critical-item');
+          const reportId = Number(row?.dataset.reportId || 0);
+          if (!reportId) return;
+          try {
+            btn.disabled = true;
+            await releaseCriticalReport(reportId, record);
+            showToast(`Report #${reportId} released to doctor.`, 'success');
+            await loadAdminCriticalQueue(page, record, compact);
+          } catch (error) {
+            showToast(error.message || 'Release failed.', 'error');
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      target.querySelectorAll('[data-action="dispatch"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const row = btn.closest('.admin-critical-item');
+          const patientId = row?.dataset.patientId || '';
+          const reportId = row?.dataset.reportId || '';
+          const dispatchNav = page.querySelector('.sidebar-nav-item[data-nav="dispatch"]');
+          if (!dispatchNav) return;
+          dispatchNav.click();
+          const patientInput = page.querySelector('#dispatchPatientId');
+          const reportInput = page.querySelector('#dispatchReportId');
+          if (patientInput) patientInput.value = patientId;
+          if (reportInput) reportInput.value = reportId;
+        });
+      });
+    } catch (error) {
+      target.innerHTML = `<div class="upload-empty">${error.message || 'Unable to load queue.'}</div>`;
+    }
+  }
+
+  function initAdminDispatchEvents(page, record) {
+    const useMyLocationBtn = page.querySelector('#useMyLocationBtn');
+    const dispatchNowBtn = page.querySelector('#dispatchNowBtn');
+    const findNearbyBtn = page.querySelector('#findNearbyBtn');
+    const out = page.querySelector('#adminDispatchOutput');
+    const nearbyList = page.querySelector('#adminNearbyList');
+    const latInput = page.querySelector('#dispatchLat');
+    const lngInput = page.querySelector('#dispatchLng');
+
+    initAdminDispatchMap(page);
+
+    if (useMyLocationBtn) {
+      useMyLocationBtn.addEventListener('click', async () => {
+        try {
+          const loc = await getCurrentLocation();
+          latInput.value = loc.latitude;
+          lngInput.value = loc.longitude;
+          showToast('Location captured.', 'success');
+        } catch (error) {
+          showToast(error.message || 'Unable to get location.', 'error');
+        }
+      });
+    }
+
+    if (findNearbyBtn) {
+      findNearbyBtn.addEventListener('click', async () => {
+        const lat = Number(latInput.value);
+        const lng = Number(lngInput.value);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          showToast('Enter valid latitude and longitude.', 'error');
+          return;
+        }
+
+        try {
+          const url = `${AMBULANCE_NEARBY_API_URL}?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}`;
+          const response = await fetch(url);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || 'Unable to fetch nearby units');
+
+          const units = Array.isArray(data.ambulances) ? data.ambulances : [];
+          if (!units.length) {
+            nearbyList.innerHTML = '<div class="upload-empty">No nearby available units.</div>';
+            return;
+          }
+
+          nearbyList.innerHTML = units.map((unit) => `
+            <div class="report-item">
+              <div class="report-icon-box">${getCardIcon('truck')}</div>
+              <div class="report-info">
+                <div class="report-name">${unit.unit_name} (${unit.vehicle_type})</div>
+                <div class="report-meta">
+                  <span>${unit.distance_km} km away</span>
+                  <span>•</span>
+                  <span>${unit.crew_info || 'Crew info pending'}</span>
+                </div>
+              </div>
+            </div>
+          `).join('');
+        } catch (error) {
+          showToast(error.message || 'Nearby query failed.', 'error');
+        }
+      });
+    }
+
+    if (dispatchNowBtn) {
+      dispatchNowBtn.addEventListener('click', async () => {
+        const patientId = Number(page.querySelector('#dispatchPatientId')?.value);
+        const reportIdRaw = page.querySelector('#dispatchReportId')?.value;
+        const lat = Number(latInput.value);
+        const lng = Number(lngInput.value);
+        const severity = page.querySelector('#dispatchSeverity')?.value || 'critical';
+
+        if (!patientId || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+          showToast('Patient ID and valid coordinates are required.', 'error');
+          return;
+        }
+
+        try {
+          dispatchNowBtn.disabled = true;
+          dispatchNowBtn.textContent = 'Dispatching...';
+          const result = await dispatchAmbulance({
+            patient_id: patientId,
+            report_id: reportIdRaw ? Number(reportIdRaw) : null,
+            latitude: lat,
+            longitude: lng,
+            severity,
+            requested_by_role: 'admin',
+            requested_by_id: record.clinical_id || record.id,
+            notes: 'Manual dispatch from admin desk.',
+          });
+
+          if (result.status === 'dispatched') {
+            out.innerHTML = `<strong>${result.ambulance?.unit_name || 'Unit'} dispatched</strong><p>ETA ${result.eta_minutes} min • Distance ${result.distance_km} km</p>`;
+            showToast('Ambulance dispatched successfully.', 'success');
+          } else {
+            out.textContent = result.message || 'No unit available.';
+            showToast(result.message || 'No unit available.', 'error');
+          }
+        } catch (error) {
+          showToast(error.message || 'Dispatch failed.', 'error');
+        } finally {
+          dispatchNowBtn.disabled = false;
+          dispatchNowBtn.textContent = 'Dispatch Ambulance';
+        }
+      });
+    }
+  }
+
   // -------- Generic Dashboard (Doctor, Admin, Lab) --------
   function getGenericDashboard(record, role, meta) {
     return `
@@ -1665,8 +2379,86 @@
       wrench: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
       clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
       download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+      cpu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>',
     };
     return icons[name] || '';
+  }
+
+  // -------- Ollama Test Dashboard --------
+  function getOllamaTestDashboard() {
+    return `
+      <div class="dash-card">
+        <h2 class="dash-card-title">Test Local Ollama (Qwen)</h2>
+        <div class="dash-card-body">
+          <p style="margin-bottom:1rem;color:var(--text-light)">Send a prompt to the local Ollama instance running the Qwen model. This routes securely through the Luminus backend.</p>
+          <div class="chat-input-area" style="position:static; margin-top:20px; box-shadow:none; padding:0; background:transparent;">
+            <textarea id="ollamaPrompt" class="chat-input" placeholder="Type a prompt for Qwen..." rows="3"></textarea>
+            <button id="ollamaSendBtn" class="chat-send-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            </button>
+          </div>
+          <div style="margin-top: 2rem;">
+            <h3 style="font-size:1rem;margin-bottom:0.5rem;">Response:</h3>
+            <div id="ollamaResponse" style="background:var(--bg-lighter); padding:1.5rem; border-radius:12px; min-height:100px; font-family:monospace; white-space:pre-wrap; border:1px solid var(--border-color);">
+              <em style="color:var(--text-lighter)">Response will appear here...</em>
+            </div>
+            <div id="ollamaError" style="color:var(--danger-color); margin-top:0.5rem; font-weight:500; display:none;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function initOllamaTestEvents(page) {
+    const sendBtn = page.querySelector('#ollamaSendBtn');
+    const promptInput = page.querySelector('#ollamaPrompt');
+    const responseBox = page.querySelector('#ollamaResponse');
+    const errorBox = page.querySelector('#ollamaError');
+
+    if (!sendBtn || !promptInput) return;
+
+    sendBtn.addEventListener('click', async () => {
+      const prompt = promptInput.value.trim();
+      if (!prompt) return;
+
+      // Reset UI
+      promptInput.value = '';
+      responseBox.innerHTML = '<em style="color:var(--text-lighter)">Generating... Please wait.</em>';
+      errorBox.style.display = 'none';
+      sendBtn.disabled = true;
+
+      try {
+        console.log('Sending prompt to /api/ollama:', prompt);
+        const res = await fetch(new URL('/api/ollama', API_BASE).toString(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt })
+        });
+        
+        const data = await res.json();
+        console.log('Received response from backend:', data);
+        
+        if (!res.ok) {
+          throw new Error(data.detail || 'Failed to fetch response from Ollama.');
+        }
+
+        responseBox.textContent = data.result || 'No response returned.';
+      } catch (err) {
+        responseBox.innerHTML = '<em style="color:var(--text-lighter)">Failed.</em>';
+        errorBox.textContent = err.message;
+        errorBox.style.display = 'block';
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+
+    // Support Enter key (Shift+Enter for newline)
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendBtn.click();
+      }
+    });
   }
 
   // -------- Init --------
@@ -1706,6 +2498,9 @@
       
       // Load alerts
       loadCriticalAlerts(effectiveDoctorId);
+
+      // Load triaged urgent requests
+      loadDoctorUrgentRequests(effectiveDoctorId);
       
       // Bind logout
       if (logoutBtn) {
@@ -1723,6 +2518,7 @@
       // Setup real-time updates
       setInterval(() => loadDoctorQueue(effectiveDoctorId), 30000); // Refresh queue every 30s
       setInterval(() => loadCriticalAlerts(effectiveDoctorId), 20000); // Refresh alerts every 20s
+      setInterval(() => loadDoctorUrgentRequests(effectiveDoctorId), 25000); // Refresh AI triage
     };
 
     async function loadDoctorQueue(doctorId) {
@@ -1771,6 +2567,48 @@
         alertsBanner.style.display = (data.alerts || []).length > 0 ? 'block' : 'none';
       } catch (err) {
         console.error('Alerts load error:', err);
+      }
+    }
+
+    async function loadDoctorUrgentRequests(doctorId) {
+      try {
+        const response = await fetch(new URL(`/api/doctor/urgent-requests/${doctorId}`, API_BASE).toString());
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Unable to load urgent requests');
+        }
+
+        const priorityList = $('#priorityList');
+        const aiSuggestions = $('#aiSuggestions');
+        const requests = Array.isArray(data.requests) ? data.requests : [];
+
+        if (priorityList) {
+          if (!requests.length) {
+            priorityList.innerHTML = '<div class="critical-item">No urgent requests released by admin.</div>';
+          } else {
+            priorityList.innerHTML = requests.map((item) => `
+              <div class="critical-item">
+                <div class="queue-item-name">${item.patient_name} • ${item.risk_level.toUpperCase()}</div>
+                <div class="queue-item-time">ESI ${item.suggested_esi || 3} • ${item.report_name || ('Report #' + item.report_id)}</div>
+                <div class="queue-item-time">${(item.doctor_actions || []).slice(0, 2).join(' | ') || 'Review now'}</div>
+                ${item.ambulance_recommended ? '<div class="report-summary-pill" style="margin-top:6px;">Ambulance Recommended</div>' : ''}
+              </div>
+            `).join('');
+          }
+        }
+
+        if (aiSuggestions) {
+          const suggestions = Array.isArray(data.ai_suggestions) ? data.ai_suggestions : [];
+          if (!suggestions.length) {
+            aiSuggestions.innerHTML = '<p style="text-align: center; font-size: 12px; color: #999;">No AI suggestions yet</p>';
+          } else {
+            aiSuggestions.innerHTML = suggestions.slice(0, 6).map((suggestion) => `
+              <div class="alert-item" style="border-left-color:#4361ee;">${suggestion}</div>
+            `).join('');
+          }
+        }
+      } catch (err) {
+        console.error('Urgent request load error:', err);
       }
     }
 
