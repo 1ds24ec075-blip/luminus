@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+sqlalchemy
+redis
+chromadb
+anthropic
+langchain
+langgraph
+sentence-transformers
+python-dotenv
+pydantic
+httpx
+openai
+faster-whisper
+python-multipart
+websockets
+apscheduler
