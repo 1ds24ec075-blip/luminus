@@ -21,24 +21,34 @@
       color: 'green',
       welcomeSub: 'Sign in to your patient portal',
       dashGreeting: 'Here\'s your health summary for today.',
+      nav: [
+        { id: 'overview', label: 'Dashboard', icon: 'activity' },
+        { id: 'reports', label: 'Reports & Records', icon: 'download' },
+        { id: 'meds', label: 'Prescriptions', icon: 'pill' },
+        { id: 'timeline', label: 'Care Timeline', icon: 'calendar' },
+        { id: 'billing', label: 'Insurance & Billing', icon: 'currency' }
+      ]
     },
     doctor: {
       label: 'Doctor',
       color: 'blue',
       welcomeSub: 'Access your clinical workspace',
       dashGreeting: 'Your clinical workspace is ready.',
+      nav: [{ id: 'overview', label: 'Clinical Overview', icon: 'activity' }]
     },
     admin: {
       label: 'Administrator',
       color: 'purple',
       welcomeSub: 'Manage hospital operations',
       dashGreeting: 'Hospital operations at a glance.',
+      nav: [{ id: 'overview', label: 'Operations', icon: 'activity' }]
     },
     lab: {
       label: 'Lab Admin',
       color: 'amber',
       welcomeSub: 'Laboratory management console',
       dashGreeting: 'Lab operations overview.',
+      nav: [{ id: 'overview', label: 'Lab Dashboard', icon: 'activity' }]
     },
   };
 
@@ -287,24 +297,17 @@
     const avatarColor = avatarColors[role] || '#4361ee';
 
     // Sidebar nav items
-    const allNavItems = [
-      { id: 'doctor', label: 'Doctor', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>' },
-      { id: 'patient', label: 'Patient', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
-      { id: 'admin', label: 'Admin', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' },
-      { id: 'lab', label: 'Laboratory', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3v7.2l-4 6.8a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-4-6.8V3"/><line x1="9" y1="3" x2="15" y2="3"/></svg>' },
-    ];
+    // Sidebar nav items from meta
+    const navItems = meta.nav || [];
 
-    // Only show the current role's nav item
-    const navItems = allNavItems.filter(item => item.id === role);
-
-    const sidebarNavHTML = navItems.map(item =>
-      `<button class="sidebar-nav-item active" data-nav="${item.id}">
-        ${item.icon}
+    const sidebarNavHTML = navItems.map((item, idx) =>
+      `<button class="sidebar-nav-item ${idx === 0 ? 'active' : ''}" data-nav="${item.id}">
+        ${getCardIcon(item.icon)}
         <span>${item.label}</span>
       </button>`
     ).join('');
 
-    // Main content depends on role
+    // Main content depends on role and current nav
     const mainContentHTML = role === 'patient'
       ? getPatientDashboard(record)
       : getGenericDashboard(record, role, meta);
@@ -361,14 +364,54 @@
     }
 
     // Logout handler
-    $('#logoutBtn').addEventListener('click', () => {
+    page.querySelector('#logoutBtn').addEventListener('click', () => {
       page.remove();
       $('.main-container').style.display = 'flex';
       usernameEl.value = '';
       passwordEl.value = '';
     });
 
+    // Sidebar nav click handler
+    page.querySelectorAll('.sidebar-nav-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const navId = btn.dataset.nav;
+        page.querySelectorAll('.sidebar-nav-item').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const contentArea = page.querySelector('.dash-content');
+        if (navId === 'reports') {
+          contentArea.innerHTML = getReportsDashboard(record);
+          initReportEvents(page);
+        } else if (navId === 'meds') {
+          contentArea.innerHTML = getMedicationDashboard(record);
+          initMedicationEvents(page);
+          // Simulated reminder notification
+          setTimeout(() => {
+            showToast('Reminder: Your evening dose of Lisinopril is due in 30 minutes.', 'success');
+          }, 4000);
+        } else if (navId === 'timeline') {
+          contentArea.innerHTML = getTimelineDashboard(record);
+          initTimelineEvents(page);
+        } else if (navId === 'billing') {
+          contentArea.innerHTML = getBillingDashboard(record);
+        } else {
+          contentArea.innerHTML = role === 'patient'
+            ? getPatientDashboard(record)
+            : getGenericDashboard(record, role, meta);
+          
+          if (role === 'patient') {
+             requestAnimationFrame(() => animateHealthRings());
+             initPatientEvents(page);
+          }
+        }
+      });
+    });
+
     // Med "Take now" buttons
+    initPatientEvents(page);
+  }
+
+  function initPatientEvents(page) {
     page.querySelectorAll('.med-action-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const item = btn.closest('.medication-item');
@@ -380,6 +423,43 @@
         btn.disabled = true;
         btn.style.opacity = '0.5';
         btn.style.cursor = 'default';
+      });
+    });
+  }
+
+  function initReportEvents(page) {
+    page.querySelectorAll('.download-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const reportName = btn.dataset.name;
+        downloadReportAsPDF(reportName, record);
+      });
+    });
+  }
+
+  function initMedicationEvents(page) {
+    page.querySelectorAll('.med-take-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.med-detail-card');
+        const status = btn.querySelector('.btn-text');
+        btn.classList.add('taken');
+        btn.innerHTML = 'Taken ✓';
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        showToast('Medication recorded.', 'success');
+      });
+    });
+  }
+
+  function initTimelineEvents(page) {
+    page.querySelectorAll('.join-call-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        showToast('Connecting to secure video consult...', 'success');
+        btn.textContent = 'Connecting...';
+        setTimeout(() => {
+          btn.textContent = 'In Call';
+          btn.style.background = 'var(--dash-green)';
+        }, 1500);
       });
     });
   }
@@ -437,6 +517,21 @@
               </div>
             </div>
             <span class="ring-label">BP</span>
+          </div>
+          <div class="health-ring">
+            <div class="ring-container">
+              <svg viewBox="0 0 100 100">
+                <circle class="ring-bg" cx="50" cy="50" r="42"/>
+                <circle class="ring-progress purple" cx="50" cy="50" r="42"
+                  stroke-dasharray="${circumference}"
+                  stroke-dashoffset="${circumference}"
+                  data-target="${circumference * 0.8}"/>
+              </svg>
+              <div class="ring-icon purple">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+            </div>
+            <span class="ring-label">Records</span>
           </div>
         </div>
       </div>
@@ -505,6 +600,454 @@
         <button class="lumi-chat-btn">Start Chat</button>
       </div>
     `;
+  }
+
+  // -------- Reports Dashboard Content --------
+  function getReportsDashboard(record) {
+    const reports = [
+      { name: 'Complete Blood Count (CBC)', date: 'Oct 02, 2026', type: 'Lab Report', status: 'ready', isNew: true },
+      { name: 'Lipid Profile', date: 'Oct 02, 2026', type: 'Lab Report', status: 'ready', isNew: true },
+      { name: 'Cardiology Consultation', date: 'Sep 14, 2026', type: 'Medical Record', status: 'ready', isNew: false },
+      { name: 'Chest X-Ray', date: 'Aug 22, 2026', type: 'Imaging', status: 'ready', isNew: false },
+      { name: 'Routine Health Checkup', date: 'Jun 10, 2026', type: 'Medical Record', status: 'ready', isNew: false },
+      { name: 'Diabetes Screening (HbA1c)', date: 'Oct 08, 2026', type: 'Lab Report', status: 'pending', isNew: true },
+    ];
+
+    const renderReportList = (list) => list.map(r => `
+      <div class="report-item">
+        <div class="report-icon-box">
+          ${getCardIcon(r.type === 'Imaging' ? 'monitor' : 'pill')}
+        </div>
+        <div class="report-info">
+          <div class="report-name">${r.name}</div>
+          <div class="report-meta">
+            <span>${r.date}</span>
+            <span>•</span>
+            <span>${r.type}</span>
+            <span class="report-status status-${r.status}">${r.status}</span>
+          </div>
+        </div>
+        <div class="report-actions">
+          ${r.status === 'ready' 
+            ? `<button class="download-btn" data-name="${r.name}">
+                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                 Download PDF
+               </button>`
+            : `<span style="font-size: 0.75rem; color: var(--dash-text-muted);">Awaiting Results</span>`
+          }
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="reports-dashboard">
+        <h2 class="section-card-title">New Reports</h2>
+        <div class="reports-list" style="margin-bottom: 32px;">
+          ${renderReportList(reports.filter(r => r.isNew))}
+        </div>
+        
+        <h2 class="section-card-title">Previous Reports</h2>
+        <div class="reports-list">
+          ${renderReportList(reports.filter(r => !r.isNew))}
+        </div>
+      </div>
+    `;
+  }
+
+  // -------- Medication Dashboard Content --------
+  function getMedicationDashboard(record) {
+    const meds = [
+      { name: 'Lisinopril', dosage: '10mg Tablet', schedule: { morning: '08:00 AM', evening: '08:00 PM' }, next: '08:00 PM', freq: 'Twice daily', icon: 'pill' },
+      { name: 'Atorvastatin', dosage: '20mg Capsule', schedule: { morning: null, evening: '09:00 PM' }, next: '09:00 PM', freq: 'Once daily (Night)', icon: 'activity' },
+      { name: 'Metformin', dosage: '500mg Tablet', schedule: { morning: '08:00 AM', evening: '08:00 PM' }, next: '08:00 PM', freq: 'Twice daily with meals', icon: 'pill' },
+    ];
+
+    const medsHTML = meds.map(m => `
+      <div class="med-detail-card">
+        <div class="med-header">
+          <div class="med-icon-box">${getCardIcon(m.icon)}</div>
+          <div class="med-title-group">
+            <div class="med-primary-name">${m.name}</div>
+            <div class="med-dosage">${m.dosage} • ${m.freq}</div>
+          </div>
+        </div>
+        <div class="dosage-schedule">
+          <div class="schedule-pill ${m.schedule.morning ? 'active' : ''}">
+            <span class="sched-time">Morning</span>
+            <span class="sched-hour">${m.schedule.morning || '—'}</span>
+          </div>
+          <div class="schedule-pill ${m.schedule.evening ? 'active' : ''}">
+            <span class="sched-time">Evening</span>
+            <span class="sched-hour">${m.schedule.evening || '—'}</span>
+          </div>
+        </div>
+        <button class="med-action-btn med-take-btn" style="width: 100%;">
+          <span class="btn-text">Mark as Taken</span>
+        </button>
+      </div>
+    `).join('');
+
+    return `
+      <div class="meds-dashboard">
+        <div class="interaction-warning">
+          <div class="warning-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </div>
+          <div class="warning-text">Basic Interaction Check: No severe conflicts detected between your current medications.</div>
+        </div>
+        
+        <h2 class="section-card-title">Active Prescriptions</h2>
+        <div class="med-grid">
+          ${medsHTML}
+        </div>
+      </div>
+    `;
+  }
+
+  // -------- Care Timeline Content --------
+  function getTimelineDashboard(record) {
+    const events = [
+      { title: 'Follow-up Cardiology Visit', date: 'Oct 14, 2026', type: 'Appointment', desc: 'Secure video consultation with Dr. Jenkins.', status: 'upcoming' },
+      { title: 'Diagnosis: Essential Hypertension', date: 'Sep 14, 2026', type: 'Diagnosis', desc: 'Blood pressure readings consistently above 140/90.', status: 'past' },
+      { title: 'Started Lisinopril 10mg', date: 'Sep 15, 2026', type: 'Medication', desc: 'Prescribed daily dosage for hypertension management.', status: 'past' },
+      { title: 'Initial Consultation', date: 'Sep 10, 2026', type: 'Visit', desc: 'General health screening and vitals check.', status: 'past' },
+    ];
+
+    const eventsHTML = events.map(e => `
+      <div class="timeline-event">
+        <div class="event-marker"></div>
+        <div class="event-content">
+          <div class="event-header">
+            <span class="event-tag">${e.type}</span>
+            <span class="event-date">${e.date}</span>
+          </div>
+          <div class="event-title">${e.title}</div>
+          <p class="event-desc">${e.desc}</p>
+          ${e.status === 'upcoming' 
+            ? `<button class="appt-action-btn primary join-call-btn" style="margin-top: 12px; height: 36px; padding: 0 20px;">Join Teleconsult</button>` 
+            : ''
+          }
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="timeline-dashboard">
+        <h2 class="section-card-title">Care Journey Timeline</h2>
+        <div class="timeline-view">
+          ${eventsHTML}
+        </div>
+      </div>
+    `;
+  }
+
+  // -------- Billing Dashboard Content --------
+  function getBillingDashboard(record) {
+    const bills = [
+      { id: 'INV-2026-001', service: 'Lab Work (CBC, Lipid)', date: 'Oct 02, 2026', amount: '₹1250', status: 'Paid', method: 'Insurance (HDFC Ergo)' },
+      { id: 'INV-2026-002', service: 'Cardiology Consultation', date: 'Sep 14, 2026', amount: '₹800', status: 'Paid', method: 'UPI' },
+      { id: 'INV-2026-003', service: 'Emergency Visit', date: 'Aug 22, 2026', amount: '₹4500', status: 'Claimed', method: 'Insurance (HDFC Ergo)' },
+      { id: 'INV-2026-004', service: 'Pharmacy: Lisinopril', date: 'Sep 15, 2026', amount: '₹340', status: 'Pending', method: 'Pending Payment' },
+    ];
+
+    const tableHTML = bills.map(b => `
+      <tr>
+        <td style="font-family: monospace; font-weight: 600;">${b.id}</td>
+        <td>${b.service}</td>
+        <td>${b.date}</td>
+        <td style="font-weight: 600;">${b.amount}</td>
+        <td class="status-${b.status.toLowerCase().replace(' ', '-')}">${b.status}</td>
+        <td>${b.method}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div class="billing-dashboard">
+        <h2 class="section-card-title">Insurance Claims & Billing</h2>
+        <div class="billing-table-card">
+          <table class="billing-table">
+            <thead>
+              <tr>
+                <th>Invoice #</th>
+                <th>Service</th>
+                <th>Date</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Payment Method</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableHTML}
+            </tbody>
+          </table>
+          <div class="total-summary">
+            <div class="summary-item">
+              <div class="summary-label">Total Outstanding</div>
+              <div class="summary-value">₹340.00</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Insurance Claims (Pending)</div>
+              <div class="summary-value">₹4500.00</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // -------- PDF Generation Logic --------
+  async function downloadReportAsPDF(reportName, record) {
+    try {
+      showToast('Preparing professional report...', 'success');
+      
+      const jspdfLib = window.jspdf;
+      if (!jspdfLib) throw new Error('PDF Library not loaded. Ensure scripts loaded.');
+
+      const { jsPDF } = jspdfLib;
+      const doc = new jsPDF('p', 'mm', 'a4');
+      const W = 210; // page width
+      const M = 15; // margin
+      const CW = W - M * 2; // content width
+      const primaryBlue = [67, 97, 238];
+      const softBlue = [238, 242, 255];
+      const textPrimary = [26, 35, 50];
+      const textSecondary = [90, 106, 126];
+      const textMuted = [148, 163, 184];
+
+      // ── Helper: draw filled rounded rect section ──
+      const sectionBox = (y, h, fill=[248,250,252], stroke=[226,232,240]) => {
+        doc.setFillColor(...fill);
+        doc.setDrawColor(...stroke);
+        doc.roundedRect(M, y, CW, h, 2, 2, 'FD');
+      };
+
+      // ── Helper: draw manual table row ──
+      const drawRow = (cols, y, rowH, isHeader) => {
+        const colWidths = [55, 35, 40, 40]; // px widths for 4 cols
+        let x = M;
+        cols.forEach((text, i) => {
+          const cw = colWidths[i];
+          if (isHeader) {
+            doc.setFillColor(...softBlue);
+            doc.rect(x, y, cw, rowH, 'F');
+          }
+          doc.setDrawColor(...[226,232,240]);
+          doc.rect(x, y, cw, rowH, 'S');
+
+          // Status color for last column
+          if (!isHeader && i === 3) {
+            if (text === 'NORMAL')      doc.setTextColor(16, 185, 129);
+            else if (text === 'HIGH' || text === 'LOW')   doc.setTextColor(239, 68, 68);
+            else if (text === 'BORDERLINE') doc.setTextColor(245, 158, 11);
+            else doc.setTextColor(...textPrimary);
+            doc.setFont('helvetica', 'bold');
+          } else if (isHeader) {
+            doc.setTextColor(...primaryBlue);
+            doc.setFont('helvetica', 'bold');
+          } else {
+            doc.setTextColor(...textPrimary);
+            doc.setFont('helvetica', 'normal');
+          }
+          doc.text(String(text), x + 3, y + rowH/2 + 1.5, { baseline: 'middle' });
+          x += cw;
+        });
+      };
+
+
+
+      // 1. Header Section
+      // Hospital Logo/Name (left)
+      doc.setTextColor(...primaryBlue);
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text('LUMINUS', 20, 25);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.text('HEALTHCARE SYSTEMS', 20, 30);
+
+      // Report Metadata (right)
+      doc.setTextColor(...textSecondary);
+      doc.setFontSize(9);
+      doc.text(`Report ID: LUM-${Math.floor(100000 + Math.random() * 900000)}`, 190, 20, { align: 'right' });
+      doc.text(`Date: ${new Date().toLocaleDateString()}`, 190, 25, { align: 'right' });
+      doc.text(`Referring Doctor: Dr. Sarah Jenkins`, 190, 30, { align: 'right' });
+
+      // Divider
+      doc.setDrawColor(226, 232, 240);
+      doc.line(20, 38, 190, 38);
+
+      // 2. Patient Information Section
+      let y = 50;
+      doc.setFillColor(...softBlue);
+      doc.roundedRect(20, y, 170, 30, 3, 3, 'F');
+      
+      doc.setTextColor(...textSecondary);
+      doc.setFontSize(8);
+      doc.text('PATIENT NAME', 25, y+8);
+      doc.text('AGE / GENDER', 85, y+8);
+      doc.text('PATIENT ID', 145, y+8);
+      
+      doc.setTextColor(...textPrimary);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text(record.name.toUpperCase(), 25, y+16);
+      doc.text('34Y / MALE', 85, y+16);
+      doc.text(`P-77421`, 145, y+16);
+
+      // 3. Test Title Section
+      y = 95;
+      doc.setTextColor(...textPrimary);
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text(reportName, 20, y);
+      
+      // Status Badge
+      const titleWidth = doc.getTextWidth(reportName);
+      doc.setFillColor(16, 185, 129); // green
+      doc.roundedRect(25 + titleWidth, y-7, 24, 8, 2, 2, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(8);
+      doc.text('COMPLETED', 27 + titleWidth, y-1.5);
+
+
+      // 4. Results Table — drawn manually, no plugin needed
+      y = 107;
+      doc.setFontSize(9);
+      const ROW_H = 8;
+      const resultsData = reportName.toLowerCase().includes('blood') ? [
+        ['Hemoglobin', '14.2 g/dL', '13.0 - 17.0', 'NORMAL'],
+        ['WBC Count', '6.4 x10 /uL', '4.0 - 11.0', 'NORMAL'],
+        ['Platelet Count', '284 x10 /uL', '150 - 450',  'NORMAL'],
+        ['RBC Count', '4.8 mil/uL', '4.5 - 5.5',   'NORMAL'],
+        ['MCV', '88.5 fL', '80.0 - 100.0', 'NORMAL'],
+      ] : reportName.toLowerCase().includes('lipid') ? [
+        ['Total Cholesterol', '185 mg/dL', '< 200 mg/dL', 'NORMAL'],
+        ['Triglycerides', '210 mg/dL', '< 150 mg/dL', 'HIGH'],
+        ['HDL Cholesterol', '45 mg/dL', '> 40 mg/dL', 'NORMAL'],
+        ['LDL Cholesterol', '115 mg/dL', '< 100 mg/dL', 'BORDERLINE'],
+      ] : reportName.toLowerCase().includes('diabetes') ? [
+        ['HbA1c', '6.1 %', '< 5.7%', 'BORDERLINE'],
+        ['Fasting Glucose', '102 mg/dL', '70-99 mg/dL', 'BORDERLINE'],
+        ['Post-Prandial', '140 mg/dL', '< 140 mg/dL', 'NORMAL'],
+      ] : [
+        ['Systolic BP', '128 mmHg', '< 130 mmHg', 'NORMAL'],
+        ['Diastolic BP', '82 mmHg', '< 80 mmHg', 'BORDERLINE'],
+        ['Heart Rate', '74 bpm', '60-100 bpm', 'NORMAL'],
+        ['SpO2', '98 %', '> 95%', 'NORMAL'],
+      ];
+
+      drawRow(['Test Parameter', 'Result', 'Normal Range', 'Remarks'], y, ROW_H, true);
+      y += ROW_H;
+      resultsData.forEach(row => {
+        drawRow(row, y, ROW_H, false);
+        y += ROW_H;
+      });
+
+      // 5. Visual Insight Section
+      y += 8;
+      doc.setTextColor(...textPrimary);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('VISUAL RANGE ANALYSIS', M, y);
+      
+      y += 6;
+      sectionBox(y, 16, [248,250,252], [226,232,240]);
+      const barX = M + 15;
+      const barW = CW - 30;
+      // Track bg
+      doc.setFillColor(226, 232, 240);
+      doc.rect(barX, y + 6.5, barW, 3, 'F');
+      // Normal zone (middle 60%)
+      doc.setFillColor(...primaryBlue);
+      doc.setGState && doc.setGState(doc.GState ? new doc.GState({ opacity: 0.4 }) : {});
+      doc.rect(barX + barW * 0.2, y + 6.5, barW * 0.6, 3, 'F');
+      // Marker at ~55% (representing a normal value)
+      doc.setFillColor(...textPrimary);
+      doc.rect(barX + barW * 0.52, y + 5, 1.5, 7, 'F');
+      doc.setFontSize(7);
+      doc.setTextColor(...textMuted);
+      doc.text('Low', barX, y + 13);
+      doc.text('Normal Range', barX + barW * 0.5, y + 13, { align: 'center' });
+      doc.text('High', barX + barW, y + 13, { align: 'right' });
+
+      // 6. AI Explanation Section
+      y += 24;
+      sectionBox(y, 30, softBlue, [200, 213, 255]);
+      doc.setTextColor(...primaryBlue);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.text('★  LUMINA AI INSIGHT', M + 3, y + 7);
+      doc.setTextColor(...textSecondary);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      const aiText = reportName.toLowerCase().includes('lipid')
+        ? 'Your triglycerides are mildly elevated. This is commonly linked to diet and lifestyle factors. Consider reducing refined sugars and increasing physical activity. HDL levels are within range, which is a positive indicator for cardiovascular health.'
+        : 'Your blood cell counts are all within normal reference limits. This suggests healthy immune function, adequate oxygen-carrying capacity, and normal clotting ability. No concerning findings were detected in this diagnostic set.';
+      const lines = doc.splitTextToSize(aiText, CW - 8);
+      doc.text(lines, M + 3, y + 14);
+
+      // 7. Doctor Notes Section
+      y += 38;
+      doc.setTextColor(...textPrimary);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('DOCTOR NOTES & RECOMMENDATIONS', M, y);
+      sectionBox(y + 5, 22, [248, 250, 252], [226, 232, 240]);
+      doc.setTextColor(...textSecondary);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text('•  Maintain a balanced diet with leafy greens, whole grains, and lean proteins.', M + 4, y + 12);
+      doc.text('•  Schedule a routine follow-up consultation within 3-6 months.', M + 4, y + 19);
+
+      // 8. Alerts (only if abnormal detected)
+      const hasAbnormal = resultsData.some(r => r[3] === 'HIGH' || r[3] === 'LOW');
+      const hasBorderline = resultsData.some(r => r[3] === 'BORDERLINE');
+      y += 32;
+      if (hasAbnormal) {
+        doc.setFillColor(254, 242, 242);
+        doc.setDrawColor(252, 165, 165);
+        doc.roundedRect(M, y, CW, 10, 2, 2, 'FD');
+        doc.setTextColor(185, 28, 28);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.text('⚠  ALERT: One or more parameters are outside the normal reference range. Please consult your physician.', M + 3, y + 6.5);
+        y += 14;
+      } else if (hasBorderline) {
+        doc.setFillColor(255, 251, 235);
+        doc.setDrawColor(252, 211, 77);
+        doc.roundedRect(M, y, CW, 10, 2, 2, 'FD');
+        doc.setTextColor(146, 64, 14);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.text('◈  NOTE: Some results are borderline. Monitor with your doctor and consider lifestyle adjustments.', M + 3, y + 6.5);
+        y += 14;
+      }
+
+      // 9. Footer
+      const pageH = doc.internal.pageSize.height;
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.5);
+      doc.line(M, pageH - 28, W - M, pageH - 28);
+      
+      doc.setTextColor(...textMuted);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated on: ${new Date().toLocaleString()}  |  Report ID: LUM-${Math.floor(100000 + Math.random() * 900000)}`, M, pageH - 22);
+      doc.text('DISCLAIMER: This report is electronically generated. Please correlate clinically with your physician.', M, pageH - 17);
+      
+      doc.setTextColor(...primaryBlue);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.text('✦  DIGITALLY VERIFIED BY LUMINUS HEALTH SYSTEMS', W/2, pageH - 10, { align: 'center' });
+
+      // Save file
+      doc.save(`${reportName.replace(/\s+/g, '_')}_LUMINUS_REPORT.pdf`);
+      showToast('Report downloaded successfully.', 'success');
+      
+    } catch (err) {
+      console.error('PDF Error:', err);
+      showToast('Download failed: ' + err.message, 'error');
+    }
   }
 
   // -------- Generic Dashboard (Doctor, Admin, Lab) --------
